@@ -84,6 +84,7 @@ class LoopAppManager: NSObject {
     private var analyticsServicesManager = AnalyticsServicesManager()
     private(set) var testingScenariosManager: TestingScenariosManager?
     private var resetLoopManager: ResetLoopManager!
+    private var adaptiveOverrideManager: AdaptiveOverrideManager?
     private var deeplinkManager: DeeplinkManager!
 
     private var overrideHistory = UserDefaults.appGroup?.overrideHistory ?? TemporaryScheduleOverrideHistory.init()
@@ -253,6 +254,12 @@ class LoopAppManager: NSObject {
         }
 
         deviceDataManager.onboardingManager = onboardingManager
+
+        adaptiveOverrideManager = AdaptiveOverrideManager(healthStore: deviceDataManager.healthStore,
+                                                          glucoseStore: deviceDataManager.glucoseStore,
+                                                          doseStore: deviceDataManager.doseStore,
+                                                          loopManager: deviceDataManager.loopManager)
+        adaptiveOverrideManager?.start()
 
         // Analytics: user properties
         analyticsServicesManager.identifyAppName(Bundle.main.bundleDisplayName)

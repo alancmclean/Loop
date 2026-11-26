@@ -279,6 +279,16 @@ extension SettingsView {
                             descriptiveText: NSLocalizedString("Diabetes Treatment", comment: "Descriptive text for Therapy Settings"))
             }
 
+            if let adaptiveOverrideManager = AdaptiveOverrideManager.shared {
+                NavigationLink(destination: AdaptiveOverrideView(viewModel: AdaptiveOverrideViewModel(manager: adaptiveOverrideManager))) {
+                    LargeButton(action: { },
+                                includeArrow: false,
+                                imageView: Image(systemName: "waveform.path.ecg").resizable().scaledToFit().foregroundColor(.accentColor).frame(width: 40, height: 40),
+                                label: NSLocalizedString("Adaptive Adjustments", comment: "Title text for button to adaptive override settings"),
+                                descriptiveText: NSLocalizedString("Exercise, sleep, site & stress", comment: "Descriptive text for adaptive override settings"))
+                }
+            }
+
             ForEach(pluginMenuItems.filter {$0.section == .configuration}) { item in
                 item.view
             }
