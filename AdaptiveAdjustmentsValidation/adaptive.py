@@ -280,8 +280,8 @@ class Config:
         self.__dict__.update(kw)
 
 
-def decide(cfg, active, factors, autos, glucose_recent, site_suspect, current):
-    """Returns new scale (1.0 = none)."""
+def decide(cfg, active, factors, autos, glucose_recent, site_suspect, current, extra=1.0):
+    """Returns new scale (1.0 = none). extra: additional multiplier (time-of-day profile, ride prep)."""
     latest = glucose_recent[-1]
     rate = None
     if len(glucose_recent) >= 2:
@@ -300,6 +300,7 @@ def decide(cfg, active, factors, autos, glucose_recent, site_suspect, current):
         a = min(max(autos, cfg.autosens_range[0]), cfg.autosens_range[1])
         if abs(a - 1) >= 0.01:
             target *= a
+    target *= extra
     lo = min(max(cfg.min_scale, cfg.abs_min), 1.0); hi = max(min(cfg.max_scale, cfg.abs_max), 1.0)
     target = min(max(target, lo), hi)
     low_fall = latest[1] < cfg.low_bg or (rate is not None and rate <= cfg.falling)
@@ -313,3 +314,69 @@ def decide(cfg, active, factors, autos, glucose_recent, site_suspect, current):
     if abs(stepped - 1) < cfg.deadband and abs(target - 1) < cfg.deadband:
         return 1.0
     return round(stepped, 2)
+
+
+# ---------- New strategies ----------
+
+def ride_habits(workouts, now, days=28, slot=30, min_freq=0.35, min_count=4):
+    """Usual workout start slots by day type (weekday/weekend), from the last `days` days."""
+    start = now - days * DAY
+    counts = {}
+    ndays = {False: 0, True: 0}
+    for d in range(int(start // DAY), int(now // DAY)):
+        ndays[(d % 7) in (5, 6)] += 1
+    for s_, e_ in workouts:
+        if start <= s_ < now and e_ - s_ >= 20:
+            wk = ((s_ // DAY) % 7) in (5, 6)
+            sl = int((s_ % DAY) // slot)
+            counts.setdefault((wk, sl), set()).add(s_ // DAY)
+    cands = []
+    for (wk, sl), dset in counts.items():
+        # merge neighbours: count days with a start in this slot or adjacent ones
+        days_ = set(dset) | counts.get((wk, sl - 1), set()) | counts.get((wk, sl + 1), set())
+        f = len(days_) / max(1, ndays[wk])
+        if len(days_) >= min_count and f >= min_freq:
+            cands.append((f, wk, sl))
+    cands.sort(reverse=True)
+    kept = []
+    for f, wk, sl in cands:
+        if not any(k[0] == wk and abs(k[1] - sl) <= 2 for k in kept):
+            kept.append((wk, sl, f))
+    return [(wk, sl * slot, f) for wk, sl, f in kept]
+
+
+def ride_prep_active(t, habits, workouts, lead=75, after=30):
+    """Before a usual workout time, if no workout has started yet today around it."""
+    wk = ((t // DAY) % 7) in (5, 6)
+    tod = t % DAY
+    for hwk, minute, f in habits:
+        if hwk != wk:
+            continue
+        if minute - lead <= tod <= minute + after:
+            slot_abs = (t // DAY) * DAY + minute
+            if not any(slot_abs - 120 <= s_ <= t for s_, e_ in workouts):
+                return True
+    return False
+
+
+def post_exercise(t, workouts, window=180):
+    return any(s_ <= t and t - e_ < window for s_, e_ in workouts)
+
+
+def update_tod_profile(profile, cgm_recent, step_down=0.02, step_up=0.015, low_th=0.04, high_th=0.20, lo=0.7, hi=1.15, lead=(1, 2)):
+    """Outcome-based time-of-day profile (glucose only). Lows at hour h -> less insulin 1–2 h earlier."""
+    byh = {}
+    for tt, v in cgm_recent:
+        byh.setdefault(int((tt // 60) % 24), []).append(v)
+    for h, vals in byh.items():
+        v = np.array(vals)
+        if len(v) < 36:
+            continue
+        low = (v < 70).mean(); high = (v > 180).mean()
+        for L in lead:
+            k = (h - L) % 24
+            if low > low_th:
+                profile[k] = max(lo, profile.get(k, 1.0) - step_down)
+            elif high > high_th and low < low_th / 2:
+                profile[k] = min(hi, profile.get(k, 1.0) + step_up)
+    return profile

@@ -33,4 +33,25 @@ Replays the analysis on an Apple Health export, offline. Findings that changed t
   hours; glucose outcomes still showed more lows after exercise. Hence the reduce-only exercise priors.
 - Weekend showed no effect; the weekend signal is removed.
 
+## Round 2: new strategies (person-like world)
+World adds habitual rides (~4/week, 8:00 or 16:30, 30–45 min), 15% lower needs 15:00–20:00 daily,
+frequent small no-carb correction boluses, and low treatment (16 g) for everyone.
+Plain Loop: TIR 91.0%, <70 2.81%, >180 6.2%.
+
+| Version | Δ TIR | Δ <70 | Δ >180 |
+|---|---|---|---|
+| v2 (round 1 winner) | +0.84 | −0.20 | −0.63 |
+| **v5: + post-exercise target 150 + time-of-day profile — default** | **+0.99** | **−0.58** | **−0.41** |
+| v4: v5 + workout prep (auto) + stacking guard | +0.56 | −0.79 | +0.23 |
+| v5w: v5 with 50–150% limits | +0.74 | −0.76 | +0.02 |
+| v4w: v4 with 50–150% limits | +0.51 | −1.00 | +0.49 |
+
+Wider limits cut lows further but raise highs — offered as a setting, not the default.
+
+Real-data replay of the new ideas (`replay_new.py`):
+- Habitual-workout prediction: only ~30% of predicted windows were followed by a ride; ~20% of rides
+  were predicted → automatic prep is off by default; a "Workout soon" button is provided instead.
+- 44% of 4–9 pm lows occurred within 8 h after a ride → post-exercise target is on by default.
+- Stacking guard was active before 28% of lows vs 19% of random times (weak) → off by default.
+
 Never commit health data to this repository.

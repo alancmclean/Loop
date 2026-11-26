@@ -62,6 +62,8 @@ final class AdaptiveOverrideManager {
     private let siteAlertCooldown: TimeInterval = 3 * 3600
 
     private var timer: Timer?
+    /// Target floor wanted by the latest update (used when building / refreshing our override).
+    private var desiredTargetFloor: Double?
     private var observerQueries: [HKObserverQuery] = []
     private var isRunning = false
     private var physiologyCache: (fetchedAt: Date, hrv: [AOMetricSample], rhr: [AOMetricSample], temp: [AOMetricSample])?
@@ -88,6 +90,7 @@ final class AdaptiveOverrideManager {
     private enum Key: String {
         case config, factors, snapshot, ownSyncIdentifier, enabledAt, logs, manualSites, ticks, habits
         case suggestions, report, lastWeeklyAt, siteAlerts, remindedHabits, effectivenessNotes, lastSuggestedScale
+        case todProfile, workoutHabits, workoutPrepUntil, typicalIOB
         var full: String { "com.loopkit.Loop.AdaptiveOverride." + rawValue }
     }
 
@@ -123,6 +126,21 @@ final class AdaptiveOverrideManager {
 
     var enabledAt: Date? { load(.enabledAt, as: Date.self) }
     var mealHabits: [AOMealHabit] { load(.habits, as: [AOMealHabit].self) ?? [] }
+    var timeOfDayProfile: AOTimeOfDayProfile { load(.todProfile, as: AOTimeOfDayProfile.self) ?? AOTimeOfDayProfile() }
+    var workoutHabits: [AOWorkoutHabit] { load(.workoutHabits, as: [AOWorkoutHabit].self) ?? [] }
+    var workoutPrepUntil: Date? { load(.workoutPrepUntil, as: Date.self) }
+    private var typicalIOB: [Int: Double] { load(.typicalIOB, as: [Int: Double].self) ?? [:] }
+
+    /// "Workout soon": less insulin and a higher target for the next 90 minutes (or until a workout is recorded).
+    func startWorkoutPrep(at date: Date = Date()) {
+        save(date.addingTimeInterval(config.workoutPrepDuration), .workoutPrepUntil)
+        Task { await update() }
+    }
+
+    func cancelWorkoutPrep() {
+        save(nil as Date?, .workoutPrepUntil)
+        Task { await update() }
+    }
     var suggestions: AOSettingsSuggestions { load(.suggestions, as: AOSettingsSuggestions.self) ?? AOSettingsSuggestions() }
     var weeklyReport: AOWeeklyReport? { load(.report, as: AOWeeklyReport.self) }
     var effectivenessNotes: [String] { load(.effectivenessNotes, as: [String].self) ?? [] }
@@ -258,6 +276,41 @@ final class AdaptiveOverrideManager {
             let current = loopManager.settings.scheduleOverride.flatMap { $0.hasFinished(relativeTo: now) ? nil : $0 }
             let ownActive = current.flatMap { $0.syncIdentifier == ownSyncIdentifier ? $0 : nil }
 
+            // New strategies: time-of-day profile, workout prep, post-exercise target, stacking guard.
+            var extras: [(reason: String, factor: Double)] = []
+            var targetFloor: Double?
+            func raiseTarget(_ value: Double) { targetFloor = max(targetFloor ?? 0, value) }
+            if config.useTimeOfDayProfile {
+                extras.append((reason: "Time of day", factor: timeOfDayProfile.factor(at: now, calendar: rules.calendar)))
+            }
+            let workoutStartedRecently = context.workouts.contains { $0.end > now.addingTimeInterval(-config.postExerciseWindow) }
+            var prep = false
+            if let until = workoutPrepUntil {
+                if now < until && !context.workouts.contains(where: { $0.end > until.addingTimeInterval(-config.workoutPrepDuration) }) {
+                    prep = true
+                } else {
+                    save(nil as Date?, .workoutPrepUntil)
+                }
+            }
+            if !prep && config.autoWorkoutPrep {
+                prep = AOWorkoutHabitLearner(calendar: rules.calendar).prepActive(habits: workoutHabits, workouts: context.workouts, now: now)
+            }
+            if prep {
+                extras.append((reason: "Workout soon", factor: config.workoutPrepScale))
+                raiseTarget(config.workoutPrepTargetMgdl)
+            }
+            if config.postExerciseTarget && workoutStartedRecently {
+                raiseTarget(config.postExerciseTargetMgdl)
+            }
+            if config.stackingGuard {
+                let hour = rules.calendar.component(.hour, from: now)
+                if AOStackingGuard().active(iob: AOInsulinModel.onBoard(doses, at: now), typicalIOB: typicalIOB[hour],
+                                            glucose: glucose.filter { $0.date >= now.addingTimeInterval(-20 * 60) }) {
+                    extras.append((reason: "High insulin on board", factor: 0.9))
+                    raiseTarget(140)
+                }
+            }
+
             let decision = AODecisionEngine(config: config).decide(AODecisionInput(
                 now: now,
                 activeSignals: active,
@@ -266,7 +319,10 @@ final class AdaptiveOverrideManager {
                 recentGlucose: glucose.filter { $0.date >= now.addingTimeInterval(-30 * 60) },
                 siteFailureSuspected: siteFailure,
                 currentOwnScale: ownActive?.settings.insulinNeedsScaleFactor,
-                otherOverrideActive: current != nil && ownActive == nil))
+                otherOverrideActive: current != nil && ownActive == nil,
+                extraFactors: extras,
+                targetFloor: targetFloor))
+            desiredTargetFloor = targetFloor
 
             log.default("Signals %{public}@ autosens %{public}@ -> %{public}@",
                         String(describing: active.map(\.id).sorted()), String(describing: autosens), String(describing: decision))
@@ -297,7 +353,7 @@ final class AdaptiveOverrideManager {
             let id = UUID()
             let override = TemporaryScheduleOverride(
                 context: .custom,
-                settings: TemporaryScheduleOverrideSettings(targetRange: nil, insulinNeedsScaleFactor: scale),
+                settings: Self.overrideSettings(scale: scale, targetFloor: desiredTargetFloor),
                 startDate: now,
                 duration: .finite(overrideLifetime),
                 enactTrigger: .local,
@@ -306,8 +362,12 @@ final class AdaptiveOverrideManager {
             await loopManager.enactOverride(override)
             let previous = ownActive?.settings.insulinNeedsScaleFactor ?? 1.0
             // Notify on meaningful changes only, not every 5% ramp step.
-            if abs(scale - previous) >= 0.1 || ownActive == nil {
-                await notify(id: "AdaptiveOverride", title: "Insulin adjusted to \(AODecisionEngine.percent(scale))",
+            let previousFloor = ownActive?.settings.targetRange?.lowerBound.doubleValue(for: .milligramsPerDeciliter)
+            if abs(scale - previous) >= 0.1 || ownActive == nil || previousFloor != desiredTargetFloor {
+                let title = abs(scale - 1.0) < 0.005 && desiredTargetFloor != nil
+                    ? "Target raised to \(Int(desiredTargetFloor!))"
+                    : "Insulin adjusted to \(AODecisionEngine.percent(scale))"
+                await notify(id: "AdaptiveOverride", title: title,
                              body: reasons.joined(separator: "\n"))
             }
             return scale
@@ -322,12 +382,25 @@ final class AdaptiveOverrideManager {
 
         case .noChange:
             guard var own = ownActive else { return nil }
-            if mode == .automatic, own.scheduledEndDate.timeIntervalSince(now) < refreshWhenRemaining {
+            let ownFloor = own.settings.targetRange?.lowerBound.doubleValue(for: .milligramsPerDeciliter)
+            if mode == .automatic, ownFloor != desiredTargetFloor {
+                // Same scale, different target (e.g. post-exercise window ended): update in place.
+                own.settings = Self.overrideSettings(scale: own.settings.insulinNeedsScaleFactor ?? 1.0, targetFloor: desiredTargetFloor)
+                own.scheduledEndDate = now.addingTimeInterval(overrideLifetime)
+                await loopManager.enactOverride(own)
+            } else if mode == .automatic, own.scheduledEndDate.timeIntervalSince(now) < refreshWhenRemaining {
                 own.scheduledEndDate = now.addingTimeInterval(overrideLifetime)
                 await loopManager.enactOverride(own)
             }
             return own.settings.insulinNeedsScaleFactor
         }
+    }
+
+    private static func overrideSettings(scale: Double, targetFloor: Double?) -> TemporaryScheduleOverrideSettings {
+        let range = targetFloor.map {
+            HKQuantity(unit: .milligramsPerDeciliter, doubleValue: $0)...HKQuantity(unit: .milligramsPerDeciliter, doubleValue: $0 + 10)
+        }
+        return TemporaryScheduleOverrideSettings(targetRange: range, insulinNeedsScaleFactor: scale)
     }
 
     private static func describe(_ d: AODecision, mode: AOConfig.Mode) -> String {
@@ -410,6 +483,20 @@ final class AdaptiveOverrideManager {
             learnedFactors = AOPatternLearner().learn(buckets: buckets, isfMgdlPerUnit: isfNow, learnedAt: now)
         }
         save(AOHabitLearner(calendar: rules.calendar).habits(meals: context.meals, start: start, end: now), .habits)
+        save(AOWorkoutHabitLearner(calendar: rules.calendar).habits(workouts: context.workouts,
+                                                                    start: now.addingTimeInterval(-28 * 24 * 3600), end: now), .workoutHabits)
+        var profile = timeOfDayProfile
+        profile.update(glucose: glucose, now: now, calendar: rules.calendar)
+        save(profile, .todProfile)
+        // Typical insulin on board by hour (last 14 days), for the stacking guard.
+        var iobByHour: [Int: [Double]] = [:]
+        var sampleTime = now.addingTimeInterval(-14 * 24 * 3600)
+        while sampleTime < now {
+            iobByHour[rules.calendar.component(.hour, from: sampleTime), default: []].append(AOInsulinModel.onBoard(
+                doses.filter { $0.start > sampleTime.addingTimeInterval(-7 * 3600) && $0.start <= sampleTime }, at: sampleTime))
+            sampleTime = sampleTime.addingTimeInterval(20 * 60)
+        }
+        save(iobByHour.compactMapValues { $0.median }, .typicalIOB)
 
         // Effectiveness: snapshot "before" once, then judge "after" against it.
         var notes = effectivenessNotes

@@ -180,6 +180,71 @@ final class AdaptiveOverrideTests: XCTestCase {
         XCTAssertEqual(scale, 1.05, accuracy: 0.001)
     }
 
+    func testTargetOnlyOverrideAfterExercise() {
+        var i = input([], [:], glucose: glucose(130, at: t0))
+        i.targetFloor = 150
+        guard case .apply(let scale, let reasons) = AODecisionEngine(config: enabledConfig).decide(i) else { return XCTFail() }
+        XCTAssertEqual(scale, 1.0)
+        XCTAssertTrue(reasons.contains("Target raised to 150"))
+    }
+
+    func testExtraFactorsCombineAndClamp() {
+        var config = enabledConfig
+        config.minScale = 0.5
+        var i = input([.exerciseEarly], [.exerciseEarly: 0.8], glucose: glucose(130, at: t0))
+        i.extraFactors = [(reason: "Workout soon", factor: 0.85), (reason: "Time of day", factor: 0.9)]
+        guard case .apply(let scale, _) = AODecisionEngine(config: config).decide(i) else { return XCTFail() }
+        XCTAssertEqual(scale, 0.8 * 0.85 * 0.9, accuracy: 0.011)
+    }
+
+    func testTimeOfDayProfileLowersInsulinBeforeLowHours() {
+        // 7 days: lows 10% of the time at 17:00, highs 30% at 10:00, fine otherwise.
+        var g: [AOGlucosePoint] = []
+        var t = h(0)
+        var i = 0
+        while t < h(24 * 7) {
+            let hour = utc.component(.hour, from: t)
+            let v: Double = hour == 17 ? (i % 10 == 0 ? 60 : 110) : hour == 10 ? (i % 10 < 3 ? 200 : 120) : 120
+            g.append(AOGlucosePoint(date: t, mgdl: v)); t = m(5, from: t); i += 1
+        }
+        var p = AOTimeOfDayProfile()
+        p.update(glucose: g, now: h(24 * 7), calendar: utc)
+        XCTAssertEqual(p.factors[16] ?? 0, 0.98, accuracy: 0.0001); XCTAssertEqual(p.factors[15] ?? 0, 0.98, accuracy: 0.0001)
+        XCTAssertEqual(p.factors[9] ?? 0, 1.015, accuracy: 0.0001)
+        XCTAssertNil(p.factors[12])
+        for _ in 0..<50 { p.update(glucose: g, now: h(24 * 7), calendar: utc) }
+        XCTAssertEqual(p.factors[16] ?? 0, 0.7, accuracy: 0.0001)   // bounded
+        XCTAssertEqual(p.factors[9] ?? 0, 1.15, accuracy: 0.0001)
+    }
+
+    func testWorkoutHabitsAndPrep() {
+        // Rides at 16:30 on most weekdays for 4 weeks.
+        var workouts: [AOWorkout] = []
+        for d in 0..<28 {
+            let day = utc.startOfDay(for: h(Double(d * 24)))
+            if !utc.isDateInWeekend(day) && d % 5 != 0 {
+                workouts.append(AOWorkout(start: m(16 * 60 + 30, from: day), end: m(17 * 60 + 5, from: day)))
+            }
+        }
+        let learner = AOWorkoutHabitLearner(calendar: utc)
+        let habits = learner.habits(workouts: workouts, start: h(0), end: h(28 * 24))
+        XCTAssertTrue(habits.contains { !$0.weekend && abs($0.minuteOfDay - (16 * 60 + 30)) <= 30 })
+        var day = utc.startOfDay(for: h(30 * 24))
+        while utc.isDateInWeekend(day) { day = day.addingTimeInterval(24 * 3600) }
+        XCTAssertTrue(learner.prepActive(habits: habits, workouts: workouts, now: m(15 * 60 + 45, from: day)))
+        XCTAssertFalse(learner.prepActive(habits: habits, workouts: workouts, now: m(12 * 60, from: day)))
+        let started = workouts + [AOWorkout(start: m(16 * 60, from: day), end: m(16 * 60 + 40, from: day))]
+        XCTAssertFalse(learner.prepActive(habits: habits, workouts: started, now: m(16 * 60 + 50, from: day)))
+    }
+
+    func testStackingGuard() {
+        let flat = glucose(120, at: t0)
+        XCTAssertTrue(AOStackingGuard().active(iob: 6, typicalIOB: 3, glucose: flat))
+        XCTAssertFalse(AOStackingGuard().active(iob: 4, typicalIOB: 3, glucose: flat))
+        XCTAssertFalse(AOStackingGuard().active(iob: 6, typicalIOB: 3, glucose: glucose(200, at: t0)))
+        XCTAssertFalse(AOStackingGuard().active(iob: 6, typicalIOB: nil, glucose: flat))
+    }
+
     // MARK: Site failure
 
     func testSiteFailureDetected() {

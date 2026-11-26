@@ -13,7 +13,7 @@ DAY = 1440
 
 
 class World:
-    def __init__(self, seed, days, dawn=True):
+    def __init__(self, seed, days, dawn=True, alan=False):
         r = np.random.default_rng(seed)
         self.days = days
         self.rng = r
@@ -65,11 +65,17 @@ class World:
                 self.meals.append((t, r.uniform(15, 30), None, False))
         self.meals.sort()
 
-        # Exercise ~3/week, morning or evening, 40–75 min.
+        # Exercise: ~3/week at random-ish times, or (alan) habitual rides ~4/week at 8:00 / 16:30, 30–45 min.
         for d in range(days):
-            if r.random() < 3 / 7:
-                start = d * DAY + int((7 if r.random() < 0.4 else 17.25) * 60 + r.normal(0, 20))
-                dur = int(r.uniform(40, 75))
+            if r.random() < (0.55 if alan else 3 / 7):
+                if alan:
+                    weekend = (d % 7) in (5, 6)
+                    hour = (9.0 if weekend else 8.0) if r.random() < 0.4 else 16.5
+                    start = d * DAY + int(hour * 60 + r.normal(0, 15))
+                    dur = int(r.uniform(30, 45))
+                else:
+                    start = d * DAY + int((7 if r.random() < 0.4 else 17.25) * 60 + r.normal(0, 20))
+                    dur = int(r.uniform(40, 75))
                 self.workouts.append((start, start + dur))
                 needs[start: start + dur + 120] *= 0.55          # during and 2 h after
                 needs[start + dur + 120: start + dur + 720] *= 0.8   # delayed, overnight
@@ -105,6 +111,11 @@ class World:
                 self.alcohol.append((t, r.random() < 0.7))
                 needs[t + 120: t + 14 * 60] *= 0.8
 
+        # (alan) late-afternoon sensitivity every day: 15:00–20:00 needs 15% less.
+        if alan:
+            for d in range(days):
+                needs[d * DAY + 15 * 60: d * DAY + 20 * 60] *= 0.85
+        self.alan = alan
         self.needs = needs
         self.base_absorb = absorb
 

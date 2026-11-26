@@ -338,9 +338,11 @@ struct AOMealDetector {
 struct AOConfig: Codable, Equatable {
     enum Mode: String, Codable, CaseIterable { case suggest, automatic }
 
-    /// Hard limits no setting can exceed.
-    static let absoluteMinScale = 0.7
-    static let absoluteMaxScale = 1.3
+    /// Hard limits no setting can exceed. The defaults below stay at 80–120%; you can widen
+    /// them up to these in settings. (In simulation, widening to 50–150% cut lows slightly
+    /// more but raised highs — see AdaptiveAdjustmentsValidation/README.md.)
+    static let absoluteMinScale = 0.5
+    static let absoluteMaxScale = 1.5
 
     var enabled = false
     var mode: Mode = .suggest
@@ -357,6 +359,21 @@ struct AOConfig: Codable, Equatable {
     var autosensRange: ClosedRange<Double> = 0.85...1.15
     var siteFailureAlerts = true
     var preBolusReminders = true
+    /// Raise Loop's target after a workout is recorded (Loop backs off on its own; can't overshoot).
+    var postExerciseTarget = true
+    var postExerciseTargetMgdl = 150.0
+    var postExerciseWindow: TimeInterval = 3 * 3600
+    /// Learn a time-of-day profile from where your lows and highs actually happen.
+    var useTimeOfDayProfile = true
+    /// Learn your usual workout times and prepare beforehand. Off by default: on real data
+    /// only ~30% of predicted windows were followed by a workout. Use "Workout soon" instead.
+    var autoWorkoutPrep = false
+    var workoutPrepScale = 0.85
+    var workoutPrepTargetMgdl = 150.0
+    var workoutPrepDuration: TimeInterval = 90 * 60
+    /// Raise target when insulin on board is unusually high for the time of day and glucose
+    /// isn't rising. Off by default: weak predictor of lows on real data.
+    var stackingGuard = false
     /// Signals switched off by you, or automatically by the effectiveness check.
     var disabledSignals: Set<AOSignal> = []
 
@@ -386,6 +403,15 @@ struct AOConfig: Codable, Equatable {
         siteFailureAlerts = try c.decodeIfPresent(Bool.self, forKey: .siteFailureAlerts) ?? d.siteFailureAlerts
         preBolusReminders = try c.decodeIfPresent(Bool.self, forKey: .preBolusReminders) ?? d.preBolusReminders
         disabledSignals = try c.decodeIfPresent(Set<AOSignal>.self, forKey: .disabledSignals) ?? d.disabledSignals
+        postExerciseTarget = try c.decodeIfPresent(Bool.self, forKey: .postExerciseTarget) ?? d.postExerciseTarget
+        postExerciseTargetMgdl = try c.decodeIfPresent(Double.self, forKey: .postExerciseTargetMgdl) ?? d.postExerciseTargetMgdl
+        postExerciseWindow = try c.decodeIfPresent(TimeInterval.self, forKey: .postExerciseWindow) ?? d.postExerciseWindow
+        useTimeOfDayProfile = try c.decodeIfPresent(Bool.self, forKey: .useTimeOfDayProfile) ?? d.useTimeOfDayProfile
+        autoWorkoutPrep = try c.decodeIfPresent(Bool.self, forKey: .autoWorkoutPrep) ?? d.autoWorkoutPrep
+        workoutPrepScale = try c.decodeIfPresent(Double.self, forKey: .workoutPrepScale) ?? d.workoutPrepScale
+        workoutPrepTargetMgdl = try c.decodeIfPresent(Double.self, forKey: .workoutPrepTargetMgdl) ?? d.workoutPrepTargetMgdl
+        workoutPrepDuration = try c.decodeIfPresent(TimeInterval.self, forKey: .workoutPrepDuration) ?? d.workoutPrepDuration
+        stackingGuard = try c.decodeIfPresent(Bool.self, forKey: .stackingGuard) ?? d.stackingGuard
     }
 }
 
@@ -404,6 +430,10 @@ struct AODecisionInput {
     var siteFailureSuspected = false
     var currentOwnScale: Double?
     var otherOverrideActive = false
+    /// Multipliers from the time-of-day profile, workout prep and stacking guard, with reasons.
+    var extraFactors: [(reason: String, factor: Double)] = []
+    /// Minimum target to set (mg/dL), e.g. after exercise. nil = keep your normal target.
+    var targetFloor: Double?
 }
 
 struct AODecisionEngine {
@@ -445,6 +475,14 @@ struct AODecisionEngine {
             }
         }
 
+        for extra in input.extraFactors where abs(extra.factor - 1.0) >= 0.01 {
+            target *= extra.factor
+            reasons.append("\(extra.reason): \(Self.percent(extra.factor))")
+        }
+        if let floor = input.targetFloor {
+            reasons.append("Target raised to \(Int(floor))")
+        }
+
         let range = config.effectiveRange
         target = min(max(target, range.lowerBound), range.upperBound)
 
@@ -464,6 +502,10 @@ struct AODecisionEngine {
         let stepped = min(max(target, current - downStep), current + config.maxStepPerUpdate)
 
         if abs(stepped - 1.0) < config.deadband && abs(target - 1.0) < config.deadband {
+            if input.targetFloor != nil {
+                // Target-only override (e.g. after exercise).
+                return .apply(scale: 1.0, reasons: reasons)
+            }
             return input.currentOwnScale == nil ? .noChange(reason: "No adjustment needed") : .clear(reason: "Signals ended")
         }
         if let own = input.currentOwnScale, abs(stepped - own) < 0.005 {
@@ -498,5 +540,135 @@ struct AOSiteFailureDetector {
         let range = now.addingTimeInterval(-window)..<now
         let delivered = doses.reduce(0.0) { $0 + AOPatternLearner.units(of: $1, in: range) }
         return scheduledBasalUnits > 0 && delivered >= minInsulinRatio * scheduledBasalUnits
+    }
+}
+
+// MARK: - Workout prep, time-of-day profile, stacking guard
+
+struct AOWorkoutHabit: Codable, Equatable, Hashable {
+    let weekend: Bool
+    let minuteOfDay: Int
+    let frequency: Double
+}
+
+struct AOWorkoutHabitLearner {
+    var slotMinutes = 30
+    var minFrequency = 0.35
+    var minOccurrences = 4
+    var calendar = Calendar.current
+
+    func habits(workouts: [AOWorkout], start: Date, end: Date) -> [AOWorkoutHabit] {
+        var dayCount: [Bool: Int] = [true: 0, false: 0]
+        var day = calendar.startOfDay(for: start)
+        while day < end {
+            dayCount[calendar.isDateInWeekend(day), default: 0] += 1
+            day = calendar.date(byAdding: .day, value: 1, to: day)!
+        }
+        var slotDays: [Bool: [Int: Set<Date>]] = [true: [:], false: [:]]
+        for w in workouts where w.start >= start && w.start < end && w.duration >= 20 * 60 {
+            let c = calendar.dateComponents([.hour, .minute], from: w.start)
+            let slot = ((c.hour ?? 0) * 60 + (c.minute ?? 0)) / slotMinutes
+            slotDays[calendar.isDateInWeekend(w.start), default: [:]][slot, default: []].insert(calendar.startOfDay(for: w.start))
+        }
+        var result: [AOWorkoutHabit] = []
+        for weekend in [false, true] {
+            let days = dayCount[weekend] ?? 0
+            guard days > 0 else { continue }
+            let slots = slotDays[weekend] ?? [:]
+            var candidates: [(slot: Int, freq: Double)] = []
+            for (slot, set) in slots {
+                let merged = set.union(slots[slot - 1] ?? []).union(slots[slot + 1] ?? [])
+                let freq = Double(merged.count) / Double(days)
+                if merged.count >= minOccurrences && freq >= minFrequency { candidates.append((slot: slot, freq: freq)) }
+            }
+            candidates.sort { $0.freq > $1.freq }
+            var kept: [(slot: Int, freq: Double)] = []
+            for c in candidates where !kept.contains(where: { abs($0.slot - c.slot) <= 2 }) { kept.append(c) }
+            result += kept.map { AOWorkoutHabit(weekend: weekend, minuteOfDay: $0.slot * slotMinutes, frequency: $0.freq) }
+        }
+        return result
+    }
+
+    /// 75 min before a usual workout time until 30 min after it, unless a workout already started.
+    func prepActive(habits: [AOWorkoutHabit], workouts: [AOWorkout], now: Date) -> Bool {
+        let weekend = calendar.isDateInWeekend(now)
+        let dayStart = calendar.startOfDay(for: now)
+        for h in habits where h.weekend == weekend {
+            let slot = dayStart.addingTimeInterval(TimeInterval(h.minuteOfDay * 60))
+            guard now >= slot.addingTimeInterval(-75 * 60), now <= slot.addingTimeInterval(30 * 60) else { continue }
+            if !workouts.contains(where: { $0.start >= slot.addingTimeInterval(-120 * 60) && $0.start <= now }) { return true }
+        }
+        return false
+    }
+}
+
+/// Outcome-based time-of-day profile, learned from glucose only (no carbs, no insulin model).
+/// Each day: for any hour with lows more than 4% of the time, the 1–2 hours *before* it get 2% less
+/// insulin; hours with highs over 20% and almost no lows get 1.5% more. Bounded, and it settles
+/// once outcomes improve, because it only looks at the last 7 days.
+struct AOTimeOfDayProfile: Codable, Equatable {
+    var factors: [Int: Double] = [:]
+    var updatedAt: Date = .distantPast
+
+    var stepDown = 0.02
+    var stepUp = 0.015
+    var lowThreshold = 0.04
+    var highThreshold = 0.20
+    var range: ClosedRange<Double> = 0.7...1.15
+
+    func factor(at date: Date, calendar: Calendar = .current) -> Double {
+        factors[calendar.component(.hour, from: date)] ?? 1.0
+    }
+
+    mutating func update(glucose: [AOGlucosePoint], now: Date, calendar: Calendar = .current) {
+        var byHour: [Int: [Double]] = [:]
+        for p in glucose where p.date >= now.addingTimeInterval(-7 * 24 * 3600) && p.date < now {
+            byHour[calendar.component(.hour, from: p.date), default: []].append(p.mgdl)
+        }
+        for (hour, values) in byHour where values.count >= 36 {
+            let low = Double(values.filter { $0 < 70 }.count) / Double(values.count)
+            let high = Double(values.filter { $0 > 180 }.count) / Double(values.count)
+            for lead in [1, 2] {
+                let k = (hour - lead + 24) % 24
+                let current = factors[k] ?? 1.0
+                if low > lowThreshold {
+                    factors[k] = max(range.lowerBound, current - stepDown)
+                } else if high > highThreshold && low < lowThreshold / 2 {
+                    factors[k] = min(range.upperBound, current + stepUp)
+                }
+            }
+        }
+        updatedAt = now
+    }
+
+    enum CodingKeys: String, CodingKey { case factors, updatedAt }
+}
+
+struct AOStackingGuard {
+    var minIOB = 2.0
+    var multipleOfTypical = 1.8
+    var maxGlucose = 150.0
+    var maxRiseMgdlPerMin = 0.5
+
+    func active(iob: Double, typicalIOB: Double?, glucose: [AOGlucosePoint]) -> Bool {
+        guard let typical = typicalIOB else { return false }
+        let g = glucose.sorted { $0.date < $1.date }
+        guard let latest = g.last, latest.mgdl < maxGlucose else { return false }
+        var rate = 0.0
+        if let prev = g.dropLast().last(where: { latest.date.timeIntervalSince($0.date) >= 9 * 60 }) {
+            rate = (latest.mgdl - prev.mgdl) / (latest.date.timeIntervalSince(prev.date) / 60)
+        }
+        return iob > max(minIOB, multipleOfTypical * typical) && rate <= maxRiseMgdlPerMin
+    }
+}
+
+extension AOInsulinModel {
+    /// Total insulin on board (all delivered insulin, including basal) at `date`.
+    static func onBoard(_ doses: [AOInsulinDose], at date: Date) -> Double {
+        doses.reduce(0.0) { total, d in
+            guard d.start <= date else { return total }
+            let mid = d.start.addingTimeInterval(d.end.timeIntervalSince(d.start) / 2)
+            return total + d.units * onBoardFraction(after: date.timeIntervalSince(mid))
+        }
     }
 }

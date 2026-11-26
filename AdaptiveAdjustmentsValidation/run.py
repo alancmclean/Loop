@@ -19,7 +19,7 @@ QUEST = pd.read_csv(os.path.join(os.path.dirname(simglucose.__file__), "params",
 
 def simulate(name, seed, days, learn_days, arm, variant=None):
     variant = variant or {}
-    w = World(seed, days)
+    w = World(seed, days, alan=variant.get("alan", False))
     if variant.get("ideal"):
         w.needs[:] = 1.0; w.base_absorb[:] = 1.0; w.site_failures = []
         w.meals = [(t, g, round(g), True) for t, g, a, b in w.meals]
@@ -56,6 +56,13 @@ def simulate(name, seed, days, learn_days, arm, variant=None):
     scales = []
     pending_change = None
     outcome_adj = {}
+    brng = np.random.default_rng(seed + 4242)
+    last_treat = last_extra = -10 ** 9
+    tod = {}
+    habits = []
+    iob_hist = {}
+    target_now = None
+    feats = variant.get("features", set())
 
     def ctx_until(t):
         return dict(
@@ -145,8 +152,43 @@ def simulate(name, seed, days, learn_days, arm, variant=None):
                     last_alert = t; alerts += 1
                     if variant.get("act_on_alert", True):
                         pending_change = t + 30
-                scale = A.decide(cfg, active, factors, autos[0], cgm[-3:], suspect, scale)
+                extra = 1.0
+                target_now = None
+                hod = int((t // 60) % 24)
+                if t % DAY == 3 * 60:
+                    if "ride_prep" in feats:
+                        habits = A.ride_habits([x for x in w.workouts if x[0] <= t], t)
+                    if "tod" in feats:
+                        tod = A.update_tod_profile(tod, [x for x in cgm if x[0] >= t - 7 * DAY])
+                if "tod" in feats:
+                    extra *= tod.get(hod, 1.0)
+                past_w = [x for x in w.workouts if x[0] <= t]
+                if "ride_prep" in feats and A.ride_prep_active(t, habits, past_w):
+                    extra *= variant.get("prep_scale", 0.85); target_now = max(target_now or 0, 150)
+                if "post_target" in feats and A.post_exercise(t, past_w):
+                    target_now = max(target_now or 0, 150)
+                if "stack_guard" in feats:
+                    iob = ctl.iob(t)
+                    hist = iob_hist.get(hod, [])
+                    typical = float(np.median(hist)) if len(hist) >= 30 else None
+                    rate = (cgm[-1][1] - cgm[-3][1]) / 10 if len(cgm) >= 3 else 0
+                    if typical is not None and iob > max(2.0, 1.8 * typical) and cgm[-1][1] < 150 and rate <= 0.5:
+                        target_now = max(target_now or 0, 140)
+                        extra *= 0.9
+                scale = A.decide(cfg, active, factors, autos[0], cgm[-3:], suspect, scale, extra)
             scales.append(scale)
+
+            # Everyone treats lows (not entered in Loop) and, alan-like, gives small no-carb corrections.
+            if reading < 65 and t - last_treat >= 20:
+                last_treat = t
+                meals[t + 1] = (16.0, None, False)
+            if variant.get("alan") and reading > 170 and len(cgm) >= 3 and cgm[-1][1] - cgm[-3][1] >= 10 \
+                    and t - last_extra >= 60 and t % 30 == 0 and brng.random() < 0.35:
+                last_extra = t
+                u = round(brng.uniform(1.0, 2.0) / 0.05) * 0.05
+                pending_bolus += u
+                ctl.record_delivery(t, u)
+                doses.append(dict(t=t, end=t, units=u, bolus=True, manual=True))
 
             # Plain user behaviour: change site after 3 h above 250.
             if reading > 250:
@@ -156,7 +198,11 @@ def simulate(name, seed, days, learn_days, arm, variant=None):
             else:
                 high_since = None
 
-            rate_uph, bolus = ctl.step(t, cgm, scale)
+            if t % 5 == 0:
+                iob_hist.setdefault(int((t // 60) % 24), []).append(ctl.iob(t))
+                if len(iob_hist[int((t // 60) % 24)]) > 14 * 12:
+                    iob_hist[int((t // 60) % 24)].pop(0)
+            rate_uph, bolus = ctl.step(t, cgm, scale, target_now)
             sched = ctl.scheduled_basal(t, scale)
             # Net (vs scheduled, override-adjusted) insulin for the controller's model.
             ctl.record_delivery(t, (rate_uph - sched) * 5 / 60 + bolus)

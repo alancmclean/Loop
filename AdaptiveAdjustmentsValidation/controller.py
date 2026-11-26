@@ -71,8 +71,18 @@ class LoopController:
         dts = np.array([d for d, _ in self.net_doses]); us = np.array([u for _, u in self.net_doses])
         return float(np.sum(us * iob_fraction(t - dts)))
 
-    def step(self, t, bg_hist, scale=1.0):
-        """bg_hist: list of (t, bg). Returns (temp_basal_uph, auto_bolus_units)."""
+    def step(self, t, bg_hist, scale=1.0, target=None):
+        """bg_hist: list of (t, bg). Returns (temp_basal_uph, auto_bolus_units).
+        target: optional override target (like a Loop override's target range)."""
+        saved = self.target
+        if target is not None:
+            self.target = target
+        try:
+            return self._step(t, bg_hist, scale)
+        finally:
+            self.target = saved
+
+    def _step(self, t, bg_hist, scale=1.0):
         isf, cr = self.isf / scale, self.cr / scale
         bg = bg_hist[-1][1]
         horizon = 360

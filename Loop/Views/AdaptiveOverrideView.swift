@@ -20,6 +20,8 @@ final class AdaptiveOverrideViewModel: ObservableObject {
     @Published var notes: [String]
     @Published var knownLocations: [String]
     @Published var isRelearning = false
+    @Published var profile: AOTimeOfDayProfile
+    @Published var workoutPrepUntil: Date?
 
     private var observer: NSObjectProtocol?
 
@@ -33,6 +35,8 @@ final class AdaptiveOverrideViewModel: ObservableObject {
         report = manager.weeklyReport
         notes = manager.effectivenessNotes
         knownLocations = manager.knownSiteLocations
+        profile = manager.timeOfDayProfile
+        workoutPrepUntil = manager.workoutPrepUntil
         observer = NotificationCenter.default.addObserver(forName: .adaptiveOverrideStatusDidChange, object: manager, queue: .main) { [weak self] _ in
             self?.reload()
         }
@@ -51,7 +55,12 @@ final class AdaptiveOverrideViewModel: ObservableObject {
         report = manager.weeklyReport
         notes = manager.effectivenessNotes
         knownLocations = manager.knownSiteLocations
+        profile = manager.timeOfDayProfile
+        workoutPrepUntil = manager.workoutPrepUntil
     }
+
+    func startWorkoutPrep() { manager.startWorkoutPrep(); workoutPrepUntil = manager.workoutPrepUntil }
+    func cancelWorkoutPrep() { manager.cancelWorkoutPrep(); workoutPrepUntil = nil }
 
     func update(_ change: (inout AOConfig) -> Void) {
         var c = config
@@ -92,10 +101,12 @@ struct AdaptiveOverrideView: View {
     var body: some View {
         List {
             statusSection
+            workoutSection
             controlSection
             quickLogSection
             siteSection
             patternsSection
+            profileSection
             habitsSection
             suggestionsSection
             reportSection
@@ -159,9 +170,39 @@ struct AdaptiveOverrideView: View {
             Stepper("Highest: \(pct(viewModel.config.effectiveRange.upperBound))",
                     value: Binding(get: { viewModel.config.maxScale }, set: { v in viewModel.update { $0.maxScale = v } }),
                     in: 1.0...AOConfig.absoluteMaxScale, step: 0.05)
+            Toggle("Higher target after exercise", isOn: Binding(get: { viewModel.config.postExerciseTarget }, set: { v in viewModel.update { $0.postExerciseTarget = v } }))
+            Toggle("Time-of-day profile", isOn: Binding(get: { viewModel.config.useTimeOfDayProfile }, set: { v in viewModel.update { $0.useTimeOfDayProfile = v } }))
+            Toggle("Auto-prepare at usual workout times", isOn: Binding(get: { viewModel.config.autoWorkoutPrep }, set: { v in viewModel.update { $0.autoWorkoutPrep = v } }))
+            Toggle("High insulin-on-board guard", isOn: Binding(get: { viewModel.config.stackingGuard }, set: { v in viewModel.update { $0.stackingGuard = v } }))
             Toggle("Recent-sensitivity adjustment", isOn: Binding(get: { viewModel.config.useAutosens }, set: { v in viewModel.update { $0.useAutosens = v } }))
             Toggle("Site problem alerts", isOn: Binding(get: { viewModel.config.siteFailureAlerts }, set: { v in viewModel.update { $0.siteFailureAlerts = v } }))
             Toggle("Pre-bolus reminders", isOn: Binding(get: { viewModel.config.preBolusReminders }, set: { v in viewModel.update { $0.preBolusReminders = v } }))
+        }
+    }
+
+    private var workoutSection: some View {
+        Section(header: Text("Workout"), footer: Text("Before a ride or workout: 15% less insulin and a target of 150 for 90 minutes, ending early once Health records the workout. After any recorded workout, the target is raised to 150 for 3 hours.")) {
+            if let until = viewModel.workoutPrepUntil, until > Date() {
+                HStack {
+                    Text("Workout prep on until \(until, style: .time)")
+                    Spacer()
+                    Button("Cancel") { viewModel.cancelWorkoutPrep() }
+                }
+            } else {
+                Button("Workout soon") { viewModel.startWorkoutPrep() }
+            }
+        }
+    }
+
+    private var profileSection: some View {
+        Section(header: Text("Time-of-day profile"), footer: Text("Learned from where your lows and highs happen over the last 7 days (glucose only). Hours with lows get less insulin 1–2 hours before.")) {
+            let hours: [Int] = viewModel.profile.factors.keys.filter { abs((viewModel.profile.factors[$0] ?? 1) - 1.0) >= 0.005 }.sorted()
+            if hours.isEmpty {
+                Text("No changes yet.").foregroundColor(.secondary)
+            }
+            ForEach(hours, id: \.self) { hour in
+                row(String(format: "%02d:00–%02d:00", hour, (hour + 1) % 24), pct(viewModel.profile.factors[hour] ?? 1))
+            }
         }
     }
 
@@ -275,7 +316,7 @@ struct AdaptiveOverrideView: View {
     private var safetySection: some View {
         Section(header: Text("Safety limits")) {
             Text("""
-            • Never goes outside \(pct(AOConfig.absoluteMinScale))–\(pct(AOConfig.absoluteMaxScale)), whatever the settings
+            • Default range 80–120%; you can widen it up to \(pct(AOConfig.absoluteMinScale))–\(pct(AOConfig.absoluteMaxScale))
             • Changes at most 5% every 5 minutes
             • No increases below 90 mg/dL, when falling fast, or when a site problem is suspected
             • Never replaces an override you or a caregiver set
