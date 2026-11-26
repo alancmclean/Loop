@@ -231,24 +231,44 @@ final class AdaptiveOverrideTests: XCTestCase {
         let f = result.factor(for: .exerciseEarly)
         XCTAssertLessThan(f, 0.85)
         XCTAssertGreaterThan(f, 0.6)
-        XCTAssertEqual(result.factor(for: .exerciseLate), 1.0, accuracy: 0.05)
+        XCTAssertGreaterThan(result.factor(for: .exerciseLate), 0.9)
     }
 
-    func testLearnerNeutralWithTooFewEpisodes() {
+    func testLearnerUsesReduceOnlyPriorsWithoutData() {
         let result = AOPatternLearner().learn(buckets: [], isfMgdlPerUnit: 50, learnedAt: t0)
-        XCTAssertEqual(result.factor(for: .exerciseEarly), 1.0)
+        XCTAssertEqual(result.factor(for: .exerciseEarly), 0.8)
+        XCTAssertEqual(result.factor(for: .alcohol), 0.9)
+        // Nothing that would add insulin without your own evidence.
+        XCTAssertEqual(result.factor(for: .shortSleep), 1.0)
+        XCTAssertEqual(result.factor(for: .illness), 1.0)
     }
 
-    func testAutosensFromFastingHours() {
-        // Fasting, flat glucose, Loop has been delivering 1.3× scheduled basal → resistance.
+    func testInsulinActivityModel() {
+        XCTAssertEqual(AOInsulinModel.onBoardFraction(after: 0), 1.0)
+        XCTAssertEqual(AOInsulinModel.onBoardFraction(after: 400 * 60), 0.0)
+        let iob2h = AOInsulinModel.onBoardFraction(after: 2 * 3600)
+        XCTAssertGreaterThan(iob2h, 0.4); XCTAssertLessThan(iob2h, 0.75)
+        // A constant 1 U/h delivered for 8 h acts at ~1 U/h by the end.
+        let doses = (0..<96).map { AOInsulinDose(start: m(Double($0 * 5), from: t0), end: m(Double($0 * 5 + 5), from: t0), units: 1.0 / 12) }
+        XCTAssertEqual(AOInsulinModel.activity(of: doses, in: h(7)..<h(8)), 1.0, accuracy: 0.02)
+    }
+
+    func testAutosensComparesWithYourOwnBaseline() {
+        // 30 days fasting at 1.2 U/h (settings say 1.0 — that's a settings issue, not a change),
+        // then a day at 1.5 U/h → 25% above *your* normal, shrunk by hours of evidence.
         var g: [AOGlucosePoint] = []
         var t = h(0)
-        while t < h(24) { g.append(AOGlucosePoint(date: t, mgdl: 130)); t = m(5, from: t) }
-        let doses = (0..<24).map { AOInsulinDose(start: h(Double($0)), end: h(Double($0 + 1)), units: 1.3) }
-        let buckets = AOBucketBuilder(rules: rules).build(glucose: g, doses: doses, context: AOContext(), start: h(0), end: h(24))
-        let est = AOAutosens().estimate(buckets: buckets, now: h(24), isf: { _ in 50 }, basal: { _ in 1.0 })
+        while t < h(24 * 31) { g.append(AOGlucosePoint(date: t, mgdl: 130)); t = m(5, from: t) }
+        let doses = (0..<(24 * 31)).map { AOInsulinDose(start: h(Double($0)), end: h(Double($0 + 1)), units: $0 < 24 * 30 ? 1.2 : 1.5) }
+        let buckets = AOBucketBuilder(rules: rules).build(glucose: g, doses: doses, context: AOContext(), start: h(0), end: h(24 * 31))
+        let est = AOAutosens().estimate(buckets: buckets, now: h(24 * 31), isf: { _ in 50 }, basal: { _ in 1.0 })
         XCTAssertEqual(est.hours, 24)
-        XCTAssertEqual(est.factor, 1.0 + 0.3 * 24 / 30, accuracy: 0.01)
+        XCTAssertGreaterThan(est.factor, 1.1)
+        XCTAssertLessThan(est.factor, 1.25 * 1.0 + 0.01)
+        // Steady 1.2 U/h every day → no adjustment, even though it's above scheduled basal.
+        let steady = (0..<(24 * 31)).map { AOInsulinDose(start: h(Double($0)), end: h(Double($0 + 1)), units: 1.2) }
+        let b2 = AOBucketBuilder(rules: rules).build(glucose: g, doses: steady, context: AOContext(), start: h(0), end: h(24 * 31))
+        XCTAssertEqual(AOAutosens().estimate(buckets: b2, now: h(24 * 31), isf: { _ in 50 }, basal: { _ in 1.0 }).factor, 1.0, accuracy: 0.01)
     }
 
     func testBasalSuggestion() {

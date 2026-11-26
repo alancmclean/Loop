@@ -269,7 +269,8 @@ struct AOSignalRules {
             }
         }
 
-        if calendar.isDateInWeekend(date) { result[.weekend] = day }
+        // Weekend is not used as a signal: in simulation it produced false patterns
+        // (e.g. "40% less insulin on weekends" with no real effect), and on real data it showed none.
         return result
     }
 }
@@ -351,7 +352,8 @@ struct AOConfig: Codable, Equatable {
     var glucoseStaleAfter: TimeInterval = 15 * 60
     var deadband = 0.03
 
-    var useAutosens = true
+    /// Off by default: on real data, day-to-day estimates were noise (no carry-over from one day to the next).
+    var useAutosens = false
     var autosensRange: ClosedRange<Double> = 0.85...1.15
     var siteFailureAlerts = true
     var preBolusReminders = true

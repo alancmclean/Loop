@@ -35,9 +35,43 @@ struct AOHourBucket: Equatable {
     var isFasting: Bool { !nearMeal && !manualBolusRecently && behaviouralSignals.isEmpty }
 }
 
+/// Loop's exponential insulin model (rapid-acting adult defaults): how much of a dose is
+/// still on board t seconds after delivery. Used to measure insulin *acting* in an hour,
+/// rather than insulin delivered in it, so Loop's own corrections and meal-bolus tails
+/// are accounted for.
+enum AOInsulinModel {
+    static let delay: TimeInterval = 10 * 60
+    static let peak: TimeInterval = 75 * 60
+    static let duration: TimeInterval = 360 * 60
+    private static let tau = peak * (1 - peak / duration) / (1 - 2 * peak / duration)
+    private static let a = 2 * tau / duration
+    private static let S = 1 / (1 - a + (1 + a) * exp(-duration / tau))
+
+    static func onBoardFraction(after elapsed: TimeInterval) -> Double {
+        let t = elapsed - delay
+        if t <= 0 { return 1 }
+        if t >= duration { return 0 }
+        return 1 - S * (1 - a) * ((t * t / (tau * duration * (1 - a)) - t / tau - 1) * exp(-t / tau) + 1)
+    }
+
+    /// Units of insulin from `doses` acting during `range`.
+    static func activity(of doses: [AOInsulinDose], in range: Range<Date>) -> Double {
+        let lookback = range.lowerBound.addingTimeInterval(-(duration + delay))
+        var total = 0.0
+        for dose in doses where dose.end > lookback && dose.start < range.upperBound {
+            let mid = dose.start.addingTimeInterval(dose.end.timeIntervalSince(dose.start) / 2)
+            total += dose.units * (onBoardFraction(after: range.lowerBound.timeIntervalSince(mid))
+                                   - onBoardFraction(after: range.upperBound.timeIntervalSince(mid)))
+        }
+        return total
+    }
+}
+
 struct AOBucketBuilder {
     var rules = AOSignalRules()
     var minGlucosePointsPerHour = 6
+    /// Hours this long after a detected meal are left out (meal insulin acts for ~5 h).
+    var mealExclusion: TimeInterval = 5 * 3600
     var calendar: Calendar { rules.calendar }
 
     func build(glucose: [AOGlucosePoint], doses: [AOInsulinDose], context: AOContext,
@@ -65,9 +99,9 @@ struct AOBucketBuilder {
                     lastGlucose: values.last!,
                     lowFraction: Double(values.filter { $0 < 70 }.count) / Double(values.count),
                     inRangeFraction: Double(values.filter { $0 >= 70 && $0 <= 180 }.count) / Double(values.count),
-                    insulin: doses.reduce(0.0) { $0 + AOPatternLearner.units(of: $1, in: range) },
+                    insulin: AOInsulinModel.activity(of: doses, in: range),
                     signals: rules.activeSignals(at: mid, context: context),
-                    nearMeal: AOMealDetector.isNearMeal(mid, meals: context.meals),
+                    nearMeal: AOMealDetector.isNearMeal(mid, meals: context.meals, after: mealExclusion),
                     manualBolusRecently: manualBoluses.contains { $0 >= recentBolusStart && $0 < bucketEnd }))
             }
             bucketStart = bucketEnd
@@ -100,7 +134,11 @@ struct AOLearnedFactors: Codable, Equatable {
 /// below baseline into insulin-equivalent. Estimates use the median (robust to site
 /// failures and odd days), are shrunk toward 1.0 with few episodes, and are clamped.
 struct AOPatternLearner {
-    var minEpisodes = 3
+    var minEpisodes = 4
+    /// Starting points used until (and shrunk toward while) your own data builds up.
+    /// Only insulin-*reducing* signals get one, from well-established effects
+    /// (exercise, alcohol); anything that would add insulin needs your own evidence.
+    static let priors: [AOSignal: Double] = [.exerciseEarly: 0.8, .exerciseLate: 0.9, .alcohol: 0.9]
     var shrinkagePrior = 5.0
     var learnedRange: ClosedRange<Double> = 0.6...1.4
     var minBaselineInsulinPerHour = 0.05
@@ -140,10 +178,18 @@ struct AOPatternLearner {
             }
             let n = episodeIDs.count
             result.episodes[signal.id] = n
-            guard n >= minEpisodes, let median = estimates.median else { continue }
+            let prior = Self.priors[signal] ?? 1.0
+            guard n >= minEpisodes, let median = estimates.median else {
+                if prior != 1.0 { result.factors[signal.id] = prior }
+                continue
+            }
             let weight = Double(n) / (Double(n) + shrinkagePrior)
-            let shrunk = 1.0 + (median - 1.0) * weight
+            let shrunk = prior + (median - prior) * weight
             result.factors[signal.id] = min(max(shrunk, learnedRange.lowerBound), learnedRange.upperBound)
+        }
+        for (signal, prior) in Self.priors where result.factors[signal.id] == nil {
+            result.factors[signal.id] = prior
+            result.episodes[signal.id] = result.episodes[signal.id] ?? 0
         }
         return result
     }
@@ -175,16 +221,24 @@ struct AOAutosens {
         return (b.insulin + (b.lastGlucose - b.firstGlucose) / isf) / scheduledBasal
     }
 
+    var minBaselineHours = 20
+
+    /// Compares the last 24 h with your own typical fasting need over the 30 days before.
+    /// (Comparing with scheduled basal instead just measures how far your settings are off,
+    /// which belongs in settings suggestions — on real data that biased every day upward.)
     func estimate(buckets: [AOHourBucket], now: Date, isf: (Date) -> Double?, basal: (Date) -> Double?) -> (factor: Double, hours: Int) {
-        let ratios = buckets
-            .filter { $0.start >= now.addingTimeInterval(-lookback) && $0.isFasting }
-            .compactMap { b -> Double? in
-                guard let s = isf(b.mid), let r = basal(b.mid) else { return nil }
-                return Self.needRatio(b, isf: s, scheduledBasal: r)
-            }
-        guard ratios.count >= minHours, let median = ratios.median else { return (1.0, ratios.count) }
-        let weight = Double(ratios.count) / (Double(ratios.count) + shrinkagePrior)
-        return (1.0 + (median - 1.0) * weight, ratios.count)
+        func ratio(_ b: AOHourBucket) -> Double? {
+            guard let s = isf(b.mid), let r = basal(b.mid) else { return nil }
+            return Self.needRatio(b, isf: s, scheduledBasal: r)
+        }
+        let fasting = buckets.filter(\.isFasting)
+        let recentStart = now.addingTimeInterval(-lookback)
+        let recent = fasting.filter { $0.start >= recentStart }.compactMap(ratio)
+        let baseline = fasting.filter { $0.start < recentStart && $0.start >= now.addingTimeInterval(-30 * 24 * 3600) }.compactMap(ratio)
+        guard recent.count >= minHours, baseline.count >= minBaselineHours,
+              let r = recent.median, let b = baseline.median, b > 0 else { return (1.0, recent.count) }
+        let weight = Double(recent.count) / (Double(recent.count) + shrinkagePrior)
+        return (1.0 + (r / b - 1.0) * weight, recent.count)
     }
 }
 

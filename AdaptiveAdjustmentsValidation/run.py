@@ -1,0 +1,205 @@
+"""Run virtual patients through the synthetic world with plain Loop vs Loop + adaptive layer.
+
+Usage: python3 -I run.py OUT.json [days] [learn_days] [patients...] [--variant name]
+"""
+import json, math, os, sys, time, warnings, bisect
+warnings.filterwarnings("ignore")
+import logging; logging.disable(logging.CRITICAL)
+import numpy as np
+import pandas as pd
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from simglucose.patient.t1dpatient import T1DPatient, Action
+import simglucose
+from world import World, DAY
+from controller import LoopController
+import adaptive as A
+
+QUEST = pd.read_csv(os.path.join(os.path.dirname(simglucose.__file__), "params", "Quest.csv")).set_index("Name")
+
+
+def simulate(name, seed, days, learn_days, arm, variant=None):
+    variant = variant or {}
+    w = World(seed, days)
+    if variant.get("ideal"):
+        w.needs[:] = 1.0; w.base_absorb[:] = 1.0; w.site_failures = []
+        w.meals = [(t, g, round(g), True) for t, g, a, b in w.meals]
+    for key in variant.get("world_off", []):
+        if key == "exercise": w.workouts = []
+    p = T1DPatient.withName(name, seed=seed)
+    base_params = p._params.copy()
+    basal = base_params.u2ss * base_params.BW / 6000 * 60   # U/h
+    cr, isf = float(QUEST.loc[name, "CR"]) * variant.get("cr_mult", {}).get(name, 1.0), float(QUEST.loc[name, "CF"]) * variant.get("isf_mult", {}).get(name, 1.0)
+    ctl = LoopController(basal, isf, cr, max_bolus=variant.get("max_bolus", 10.0))
+    rng = np.random.default_rng(seed + 999)
+    noise = 0.0
+    cfg = A.Config(**variant.get("cfg", {}))
+    rules = A.Rules()
+    for k, v in variant.get("rules", {}).items():
+        setattr(rules, k, v)
+
+    meals = {t: (g, ann, bol) for t, g, ann, bol in w.meals}
+    sched_sites = set(w.site_changes)
+    failures = {s: e for s, e in w.site_failures}
+    failing = False
+    sites = []          # observed site changes (pump events)
+    cgm = []            # (t, bg)
+    doses = []          # dicts for adaptive
+    true_bg = []
+    rate_uph, pending_bolus = basal, 0.0
+    scale = 1.0
+    factors = {}
+    high_since = None
+    alert_at = None
+    last_alert = -10 ** 9
+    autos = (1.0, 0)
+    alerts = 0
+    scales = []
+    pending_change = None
+    outcome_adj = {}
+
+    def ctx_until(t):
+        return dict(
+            workouts=[x for x in w.workouts if x[0] <= t],
+            nights=[x for x in w.nights if x[0] <= t],
+            sites=[s for s in sites if s <= t],
+            hrv=[x for x in w.hrv if x[0] <= t], rhr=[x for x in w.rhr if x[0] <= t], temp=[x for x in w.temp if x[0] <= t],
+            logs=[x for x in w.logs() if x[0] <= t] if variant.get("logs", True) else [],
+            use_physio=variant.get("physio", True))
+
+    def change_site(t):
+        nonlocal failing
+        failing = False
+        sites.append(t)
+
+    n = days * DAY
+    for t in range(n):
+        if t in sched_sites:
+            change_site(t)
+        if t in failures:
+            failing = True
+        if pending_change is not None and t >= pending_change:
+            change_site(t); pending_change = None
+
+        # Patient physiology: hidden needs -> sensitivity.
+        f = w.needs[t]
+        prm = base_params.copy()
+        prm["Vmx"] = base_params.Vmx / f
+        prm["kp3"] = base_params.kp3 / f
+        p._params = prm
+        absorb = w.base_absorb[t] * (0.3 if failing else 1.0)
+
+        cho = 0.0
+        if t in meals:
+            g, ann, bolused = meals[t]
+            cho = g
+            if bolused and ann:
+                bg_now = cgm[-1][1] if cgm else 120
+                isf_s, cr_s = isf / scale, cr / scale
+                corr = max(0.0, (bg_now - 120) / isf_s - max(0.0, ctl.iob(t))) if bg_now > 150 else 0.0
+                units = min(ann / cr_s + corr, 15.0)
+                units = round(units / 0.05) * 0.05
+                pending_bolus += units
+                ctl.carbs.append((t, ann))
+                ctl.record_delivery(t, units)
+                doses.append(dict(t=t, end=t, units=units, bolus=True, manual=True))
+
+        ins = rate_uph / 60 + pending_bolus
+        pending_bolus = 0.0
+        p.step(Action(CHO=cho, insulin=ins * absorb))
+
+        if t % 5 == 0:
+            g = p.observation.Gsub
+            true_bg.append((t, g))
+            noise = 0.7 * noise + rng.normal(0, 5)
+            reading = float(np.clip(g + noise, 40, 400))
+            cgm.append((t, round(reading)))
+
+            # Adaptive layer (arm B, after learning period).
+            if arm == "adaptive" and t >= learn_days * DAY:
+                if t % DAY == 3 * 60 or not factors:
+                    lstart = t - 30 * DAY
+                    gl = [x for x in cgm if x[0] >= lstart]
+                    dl = [d for d in doses if d["t"] >= lstart - 240]
+                    mls = A.detect_meals(gl, dl, **variant.get("meal", {}))
+                    bk = A.build_buckets(gl, dl, ctx_until(t), lstart, t, rules, mls, meal_after=variant.get("meal_after", 180), activity=variant.get("activity", False))
+                    factors, eps = A.learn(bk, isf, priors=variant.get("priors"), min_episodes=variant.get("min_episodes", 3))
+                    if variant.get("outcome") and t >= (learn_days + 3) * DAY:
+                        since = [b for b in bk if b["start"] >= learn_days * DAY]
+                        outcome_adj = A.outcome_adjust(since, outcome_adj)
+                        for s_, a_ in outcome_adj.items():
+                            factors[s_] = min(1.4, max(0.6, factors.get(s_, 1.0) + a_))
+                    factors = factors or {"_": 1.0}
+                if t % 60 == 0:
+                    gl = [x for x in cgm if x[0] >= t - DAY - 60]
+                    dl = [d for d in doses if d["t"] >= t - DAY - 240]
+                    mls = A.detect_meals(gl, dl, **variant.get("meal", {}))
+                    bk = A.build_buckets(gl, dl, ctx_until(t), t - DAY, t, rules, mls, meal_after=variant.get("meal_after", 180), activity=variant.get("activity", False))
+                    autos = A.autosens(bk, t, isf, lambda x: ctl.scheduled_basal(x, 1.0))
+                active = set(rules.active(t, ctx_until(t)))
+                gl3 = [x for x in cgm if x[0] >= t - 180]
+                dl3 = [d for d in doses if d["t"] >= t - 300]
+                mls3 = A.detect_meals(gl3, dl3, **variant.get("meal", {}))
+                ins2h = sum(d["units"] for d in doses if t - 120 <= d["t"] < t)
+                suspect = A.site_failure(t, cgm[-40:], ins2h, basal * 2, mls3)
+                if suspect and t - last_alert > 180:
+                    last_alert = t; alerts += 1
+                    if variant.get("act_on_alert", True):
+                        pending_change = t + 30
+                scale = A.decide(cfg, active, factors, autos[0], cgm[-3:], suspect, scale)
+            scales.append(scale)
+
+            # Plain user behaviour: change site after 3 h above 250.
+            if reading > 250:
+                high_since = high_since if high_since is not None else t
+                if t - high_since >= 180 and pending_change is None:
+                    pending_change = t + 15; high_since = None
+            else:
+                high_since = None
+
+            rate_uph, bolus = ctl.step(t, cgm, scale)
+            sched = ctl.scheduled_basal(t, scale)
+            # Net (vs scheduled, override-adjusted) insulin for the controller's model.
+            ctl.record_delivery(t, (rate_uph - sched) * 5 / 60 + bolus)
+            if bolus > 0:
+                pending_bolus += bolus
+                doses.append(dict(t=t, end=t, units=bolus, bolus=True, manual=False))
+            doses.append(dict(t=t, end=t + 5, units=rate_uph * 5 / 60, bolus=False, manual=False))
+            # the per-minute basal stays at rate_uph until next decision
+
+    ev = np.array([g for tt, g in true_bg if tt >= learn_days * DAY])
+    sc = np.array(scales[learn_days * DAY // 5:])
+    return dict(
+        patient=name, arm=arm, seed=seed,
+        tir=float(((ev >= 70) & (ev <= 180)).mean()), tbr70=float((ev < 70).mean()), tbr54=float((ev < 54).mean()),
+        tar180=float((ev > 180).mean()), tar250=float((ev > 250).mean()), mean=float(ev.mean()),
+        cv=float(ev.std() / ev.mean()),
+        low_hours=np.bincount(((np.array([tt for tt, g in true_bg if tt >= learn_days * DAY]) // 60) % 24)[ev < 70], minlength=24).tolist(), mean_scale=float(sc.mean()), alerts=alerts,
+        factors={k: round(v, 3) for k, v in factors.items()})
+
+
+def job(args):
+    t0 = time.time()
+    r = simulate(*args)
+    r["secs"] = round(time.time() - t0)
+    print(json.dumps(r), flush=True)
+    return r
+
+
+if __name__ == "__main__":
+    from multiprocessing import Pool
+    out = sys.argv[1]
+    days = int(sys.argv[2]) if len(sys.argv) > 2 else 50
+    learn = int(sys.argv[3]) if len(sys.argv) > 3 else 30
+    variant_name = None
+    pats = [a for a in sys.argv[4:] if not a.startswith("--")]
+    if "--variant" in sys.argv:
+        variant_name = sys.argv[sys.argv.index("--variant") + 1]
+        pats = [a for a in pats if a != variant_name]
+    from variants import VARIANTS
+    variant = VARIANTS.get(variant_name, {})
+    pats = pats or [f"adult#{i:03d}" for i in range(1, 7)]
+    arms = variant.get("arms", ["loop", "adaptive"])
+    jobs = [(pn, 100 + i, days, learn, arm, variant) for i, pn in enumerate(pats) for arm in arms]
+    with Pool(2) as pool:
+        res = pool.map(job, jobs)
+    json.dump(res, open(out, "w"), indent=1)
