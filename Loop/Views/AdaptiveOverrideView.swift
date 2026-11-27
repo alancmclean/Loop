@@ -127,7 +127,10 @@ struct AdaptiveOverrideView: View {
 
     private var statusSection: some View {
         Section(header: Text("Now")) {
-            if !viewModel.config.enabled {
+            if OrefDosingSettings.isActive {
+                Label("Paused while OpenAPS is dosing. Site alerts, pre-bolus reminders, learning and reports continue.", systemImage: "pause.circle")
+                    .foregroundColor(.secondary)
+            } else if !viewModel.config.enabled {
                 Text("Off. Loop is using your normal settings.").foregroundColor(.secondary)
             } else {
                 HStack {

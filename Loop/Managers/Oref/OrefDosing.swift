@@ -33,6 +33,17 @@ struct OrefDosingSettings: Codable, Equatable {
     var maxSMBBasalMinutes = 30.0
     var dynamicISF = false
     var adjustmentFactor = 0.8
+    /// Bolus calculator: share of the calculated bolus to recommend (Trio's "Recommended Bolus Percentage").
+    var bolusFraction = 0.8
+    /// Carbs on board the bolus calculator will dose for at most (Trio's max COB).
+    var maxCOB = 120.0
+    /// Trio's exercise mode: a high override target makes oref treat you as more sensitive.
+    var highTargetRaisesSensitivity = false
+    var lowTargetLowersSensitivity = false
+    var halfBasalTarget = 160.0
+
+    /// OpenAPS is doing all the dosing: automatic doses, bolus calculator, predictions.
+    static var isActive: Bool { current.mode == .active }
 
     private static let key = "com.loopkit.Loop.OrefDosing.settings"
 
@@ -57,6 +68,11 @@ struct OrefDosingSettings: Codable, Equatable {
         maxSMBBasalMinutes = try c.decodeIfPresent(Double.self, forKey: .maxSMBBasalMinutes) ?? d.maxSMBBasalMinutes
         dynamicISF = try c.decodeIfPresent(Bool.self, forKey: .dynamicISF) ?? d.dynamicISF
         adjustmentFactor = try c.decodeIfPresent(Double.self, forKey: .adjustmentFactor) ?? d.adjustmentFactor
+        bolusFraction = try c.decodeIfPresent(Double.self, forKey: .bolusFraction) ?? d.bolusFraction
+        maxCOB = try c.decodeIfPresent(Double.self, forKey: .maxCOB) ?? d.maxCOB
+        highTargetRaisesSensitivity = try c.decodeIfPresent(Bool.self, forKey: .highTargetRaisesSensitivity) ?? d.highTargetRaisesSensitivity
+        lowTargetLowersSensitivity = try c.decodeIfPresent(Bool.self, forKey: .lowTargetLowersSensitivity) ?? d.lowTargetLowersSensitivity
+        halfBasalTarget = try c.decodeIfPresent(Double.self, forKey: .halfBasalTarget) ?? d.halfBasalTarget
     }
 }
 
@@ -106,7 +122,12 @@ enum OrefDosingAdapter {
         let basal: BasalRateSchedule
         let sensitivity: InsulinSensitivitySchedule
         let carbRatio: CarbRatioSchedule
+        /// Effective range (including any override target) — used when no override target is active.
         let targetRange: GlucoseRangeSchedule
+        /// Your scheduled correction range, without overrides.
+        let scheduledTargetRange: GlucoseRangeSchedule?
+        /// Active override, if any. Its target is passed to oref as a temp target (Trio's model).
+        let activeOverride: TemporaryScheduleOverride?
         let suspendThreshold: HKQuantity?
         let maxBasal: Double
         let maxBolus: Double
@@ -127,10 +148,24 @@ enum OrefDosingAdapter {
                               value: HKQuantity(unit: c.sensitivity.unit, doubleValue: $0.value).doubleValue(for: mgdl))
         }
         let cr = c.carbRatio.items.map { OrefScheduleEntry(startMinutes: minutes($0.startTime), value: $0.value) }
-        // Targets: the effective range right now (includes any override target), as a flat schedule.
-        let range = c.targetRange.quantityRange(at: c.now)
-        let targets = [OrefTargetEntry(startMinutes: 0, low: range.lowerBound.doubleValue(for: mgdl),
+        // Targets the way Trio handles them: your scheduled range as the profile, and an override's
+        // target as a temp target (so oref's exercise / sensitivity options can act on it).
+        var tempTarget: OrefTempTarget?
+        var targets: [OrefTargetEntry]
+        if let o = c.activeOverride, let range = o.settings.targetRange, let scheduled = c.scheduledTargetRange {
+            targets = scheduled.items.map {
+                OrefTargetEntry(startMinutes: minutes($0.startTime),
+                                low: HKQuantity(unit: scheduled.unit, doubleValue: $0.value.minValue).doubleValue(for: mgdl),
+                                high: HKQuantity(unit: scheduled.unit, doubleValue: $0.value.maxValue).doubleValue(for: mgdl))
+            }
+            let minutesLeft = o.duration == .indefinite ? 24 * 60 : max(5, o.scheduledEndDate.timeIntervalSince(c.now) / 60)
+            tempTarget = OrefTempTarget(start: c.now, durationMinutes: minutesLeft,
+                                        low: range.lowerBound.doubleValue(for: mgdl), high: range.upperBound.doubleValue(for: mgdl))
+        } else {
+            let range = c.targetRange.quantityRange(at: c.now)
+            targets = [OrefTargetEntry(startMinutes: 0, low: range.lowerBound.doubleValue(for: mgdl),
                                        high: range.upperBound.doubleValue(for: mgdl))]
+        }
 
         var doses: [OrefDose] = []
         for d in c.doses {
@@ -161,13 +196,16 @@ enum OrefDosingAdapter {
         settings.maxUAMSMBBasalMinutes = s.maxSMBBasalMinutes
         settings.dynamicISF = s.dynamicISF
         settings.adjustmentFactor = s.adjustmentFactor
+        settings.highTempTargetRaisesSensitivity = s.highTargetRaisesSensitivity
+        settings.lowTempTargetLowersSensitivity = s.lowTargetLowersSensitivity
+        settings.halfBasalExerciseTarget = s.halfBasalTarget
 
         var temp: OrefCurrentTemp?
         if let t = c.currentTemp, t.endDate > c.now {
             temp = OrefCurrentTemp(rate: t.unitsPerHour, minutesRemaining: Int(t.endDate.timeIntervalSince(c.now) / 60), start: t.startDate)
         }
 
-        return OrefInputs(
+        var inputs = OrefInputs(
             now: c.now,
             glucose: c.glucose.map { OrefGlucose(date: $0.startDate, mgdl: $0.quantity.doubleValue(for: mgdl)) },
             doses: doses,
@@ -175,6 +213,48 @@ enum OrefDosingAdapter {
             basal: basal, isf: isf, carbRatio: cr, targets: targets, settings: settings,
             currentTemp: temp, reservoir: c.reservoir, tddLast24h: c.tddLast24h, tddAverage: c.tddAverage,
             microBolusAllowed: s.enableSMB)
+        inputs.tempTarget = tempTarget
+        return inputs
+    }
+
+    // MARK: Predictions
+
+    /// The curve to show on Loop's chart: COB-based while carbs are absorbing, UAM when on, otherwise IOB.
+    static func predictedGlucose(from r: OrefResult, start: Date) -> [PredictedGlucoseValue]? {
+        let curve = ((r.cob ?? 0) > 0 ? r.predictions["cob"] : nil) ?? r.predictions["uam"] ?? r.predictions["iob"]
+        guard let values = curve, !values.isEmpty else { return nil }
+        return values.enumerated().map { i, v in
+            PredictedGlucoseValue(startDate: start.addingTimeInterval(Double(i) * 300),
+                                  quantity: HKQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(v)))
+        }
+    }
+
+    // MARK: Bolus calculator (Trio-style)
+
+    struct BolusInputs {
+        let glucose: Double
+        /// Change over the last 15 minutes (mg/dL).
+        let delta15: Double?
+        let target: Double
+        let isf: Double
+        let carbRatio: Double
+        let iob: Double
+        let cob: Double
+        let newCarbs: Double
+        let maxBolus: Double
+        let suspendThreshold: Double?
+    }
+
+    /// Trio's calculator approach: what it takes to reach target, cover carbs on board plus the new
+    /// carbs, and account for the recent trend, minus insulin on board — then scaled by the
+    /// recommended-bolus percentage and capped at max bolus.
+    static func manualBolus(_ b: BolusInputs, settings s: OrefDosingSettings) -> (units: Double, belowThreshold: Bool) {
+        if let low = b.suspendThreshold, b.glucose < low { return (0, true) }
+        let carbs = min(b.cob + b.newCarbs, s.maxCOB)
+        var whole = (b.glucose - b.target) / b.isf + carbs / b.carbRatio - b.iob
+        if let d = b.delta15 { whole += d / b.isf }
+        let factored = whole > 0 ? whole * s.bolusFraction : 0
+        return (min(max(factored, 0), b.maxBolus), false)
     }
 
     /// oref's decision as a Loop recommendation, clamped to Loop's limits.

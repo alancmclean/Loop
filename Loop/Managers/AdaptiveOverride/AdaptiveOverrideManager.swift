@@ -346,7 +346,13 @@ final class AdaptiveOverrideManager {
                 }
             }
 
-            let decision = AODecisionEngine(config: config).decide(AODecisionInput(
+            // When OpenAPS is dosing, this layer stops changing insulin (OpenAPS has its own sensitivity
+            // handling), but keeps alerts, reminders, learning and reports.
+            let orefActive = OrefDosingSettings.isActive
+            var dosingConfig = config
+            if orefActive { dosingConfig.enabled = false }
+
+            let decision = AODecisionEngine(config: dosingConfig).decide(AODecisionInput(
                 now: now,
                 activeSignals: active,
                 factors: learnedFactors,
@@ -371,7 +377,9 @@ final class AdaptiveOverrideManager {
 
             status = AOStatus(updatedAt: now, activeSignals: active.sorted(), autosens: autosens.factor,
                               autosensHours: autosens.hours, appliedScale: applied,
-                              lastDecision: Self.describe(decision, mode: config.mode), siteFailureSuspected: siteFailure,
+                              lastDecision: orefActive ? "Paused: OpenAPS is dosing. Alerts, reminders and learning continue."
+                                                       : Self.describe(decision, mode: config.mode),
+                              siteFailureSuspected: siteFailure,
                               dayForecast: dayForecast)
         } catch {
             log.error("Adaptive override update failed: %{public}@", String(describing: error))

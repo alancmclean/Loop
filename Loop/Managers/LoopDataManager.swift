@@ -1470,6 +1470,10 @@ extension LoopDataManager {
             // successful in any case.
             return nil
         }
+        if OrefDosingSettings.isActive {
+            return try orefManualBolus(manualGlucose: glucose.quantity.doubleValue(for: .milligramsPerDeciliter),
+                                       potentialCarbEntry: potentialCarbEntry, replacedCarbEntry: replacedCarbEntry)
+        }
 
         let pendingInsulin = try getPendingInsulin()
         let shouldIncludePendingInsulin = pendingInsulin > 0
@@ -1484,6 +1488,9 @@ extension LoopDataManager {
             // Sending additional pump commands is not going to be
             // successful in any case.
             return nil
+        }
+        if OrefDosingSettings.isActive {
+            return try orefManualBolus(manualGlucose: nil, potentialCarbEntry: potentialCarbEntry, replacedCarbEntry: replacedCarbEntry)
         }
 
         let pendingInsulin = try getPendingInsulin()
@@ -1884,6 +1891,12 @@ extension LoopDataManager {
                 if orefSettings.mode == .active {
                     if cycle.error == nil {
                         chosenRecommendation = cycle.orefRecommendation
+                        // Show OpenAPS's forecast, not Loop's, so the chart matches what's dosing.
+                        if let result = cycle.result, let curve = OrefDosingAdapter.predictedGlucose(from: result, start: predictedGlucose[0].startDate) {
+                            self.predictedGlucose = curve
+                            self.predictedGlucoseIncludingPendingInsulin = curve
+                            dosingDecision.predictedGlucose = curve
+                        }
                     } else {
                         self.logger.error("oref failed, falling back to Loop's recommendation: %{public}@", cycle.error ?? "")
                     }
@@ -2705,7 +2718,9 @@ extension LoopDataManager {
         let context = OrefDosingAdapter.Context(
             now: now, glucose: glucose, doses: doses, carbs: recentCarbEntries ?? [],
             basal: basal, sensitivity: sensitivity, carbRatio: carbRatio, targetRange: targetRange,
-            suspendThreshold: settings.mode == .off ? nil : self.settings.suspendThreshold?.quantity,
+            scheduledTargetRange: self.settings.glucoseTargetRangeSchedule,
+            activeOverride: activeOverrideForOref(at: now),
+            suspendThreshold: self.settings.suspendThreshold?.quantity,
             maxBasal: maxBasal, maxBolus: maxBolus, currentTemp: currentTemp, insulinType: pumpInsulinType,
             reservoir: doseStore.lastReservoirValue?.unitVolume, tddLast24h: tdd24, tddAverage: tdd7)
         do {
@@ -2714,6 +2729,62 @@ extension LoopDataManager {
         } catch {
             return finish(nil, String(describing: error))
         }
+    }
+
+    /// The override whose target oref should see as a temp target (pre-meal wins while it runs, like Loop).
+    fileprivate func activeOverrideForOref(at now: Date) -> TemporaryScheduleOverride? {
+        let candidates = [settings.preMealOverride, settings.scheduleOverride].compactMap { $0 }
+        return candidates.first { $0.startDate <= now && !$0.hasFinished(relativeTo: now) && $0.settings.targetRange != nil }
+    }
+
+    /// Trio-style bolus calculator, using OpenAPS's latest IOB and COB.
+    fileprivate func orefManualBolus(manualGlucose: Double?, potentialCarbEntry: NewCarbEntry?,
+                                     replacedCarbEntry: StoredCarbEntry?) throws -> ManualBolusRecommendation? {
+        let now = Date()
+        guard let cycle = OrefDosingStatus.shared.latest, let result = cycle.result else {
+            throw LoopError.missingDataError(.activeInsulin)
+        }
+        guard now.timeIntervalSince(cycle.date) < 15 * 60 else { throw LoopError.recommendationExpired(date: cycle.date) }
+        guard let isfSchedule = insulinSensitivityScheduleApplyingOverrideHistory,
+              let crSchedule = carbRatioScheduleApplyingOverrideHistory,
+              let range = settings.effectiveGlucoseTargetRangeSchedule(presumingMealEntry: potentialCarbEntry != nil),
+              let maxBolus = settings.maximumBolus else {
+            throw LoopError.configurationError(.insulinSensitivitySchedule)
+        }
+
+        // Current glucose and 15-minute change.
+        var recent: [StoredGlucoseSample] = []
+        let group = DispatchGroup()
+        group.enter()
+        glucoseStore.getGlucoseSamples(start: now.addingTimeInterval(-25 * 60), end: nil) { result in
+            if case .success(let samples) = result { recent = samples }
+            group.leave()
+        }
+        _ = group.wait(timeout: .now() + 10)
+        let mgdl = HKUnit.milligramsPerDeciliter
+        guard let latest = recent.last else { throw LoopError.missingDataError(.glucose) }
+        let glucose = manualGlucose ?? latest.quantity.doubleValue(for: mgdl)
+        var delta15: Double?
+        if let earlier = recent.last(where: { latest.startDate.timeIntervalSince($0.startDate) >= 14 * 60 }) {
+            delta15 = latest.quantity.doubleValue(for: mgdl) - earlier.quantity.doubleValue(for: mgdl)
+        }
+
+        let targetRange = range.quantityRange(at: now)
+        let target = (targetRange.lowerBound.doubleValue(for: mgdl) + targetRange.upperBound.doubleValue(for: mgdl)) / 2
+        let newCarbs = (potentialCarbEntry?.quantity.doubleValue(for: .gram()) ?? 0) - (replacedCarbEntry?.quantity.doubleValue(for: .gram()) ?? 0)
+
+        let calc = OrefDosingAdapter.manualBolus(.init(
+            glucose: glucose, delta15: delta15, target: target,
+            isf: isfSchedule.quantity(at: now).doubleValue(for: mgdl),
+            carbRatio: crSchedule.quantity(at: now).doubleValue(for: .gram()),
+            iob: result.iob ?? 0, cob: result.cob ?? 0, newCarbs: max(newCarbs, 0), maxBolus: maxBolus,
+            suspendThreshold: settings.suspendThreshold?.quantity.doubleValue(for: mgdl)), settings: OrefDosingSettings.current)
+
+        let units = delegate?.roundBolusVolume(units: calc.units) ?? calc.units
+        let notice: BolusRecommendationNotice? = calc.belowThreshold
+            ? .glucoseBelowSuspendThreshold(minGlucose: PredictedGlucoseValue(startDate: now, quantity: HKQuantity(unit: mgdl, doubleValue: glucose)))
+            : nil
+        return ManualBolusRecommendation(amount: units, pendingInsulin: 0, notice: notice)
     }
 }
 

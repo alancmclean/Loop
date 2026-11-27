@@ -58,7 +58,7 @@ struct OrefDosingView: View {
     var body: some View {
         List {
             Section(header: Text("Dosing algorithm"),
-                    footer: Text("Shadow runs the OpenAPS algorithm (from Trio) every cycle and shows what it would do, while Loop's algorithm keeps dosing. Active lets OpenAPS dose. Loop's limits (max basal, max bolus, stale data checks) still apply. If OpenAPS fails in a cycle, Loop's own recommendation is used.")) {
+                    footer: Text("Shadow runs the OpenAPS algorithm (from Trio) every cycle and shows what it would do; Loop's algorithm keeps doing everything. Active switches everything that doses to OpenAPS: automatic temp basals and micro boluses, the bolus calculator, and the forecast on the main chart. Adaptive Adjustments stops changing insulin (alerts and reminders continue), and Loop's own algorithm options (dosing strategy, partial application, retrospective correction) have no effect. Overrides still scale your settings, and an override's target is passed to OpenAPS as a temp target, as in Trio. Loop's limits (max basal, max bolus, stale-data checks) still apply.")) {
                 Picker("Algorithm", selection: Binding(get: { viewModel.settings.mode }, set: { mode in
                     if mode == .active && viewModel.settings.mode != .active { viewModel.confirmActive = true }
                     else { viewModel.update { $0.mode = mode } }
@@ -90,6 +90,11 @@ struct OrefDosingView: View {
                 }
                 Stepper("Adjust max IOB", value: Binding(get: { viewModel.settings.maxIOB ?? 10 }, set: { v in viewModel.update { $0.maxIOB = v } }),
                         in: 1...30, step: 0.5)
+                Stepper("Bolus calculator: \(Int((viewModel.settings.bolusFraction * 100).rounded()))% of calculated",
+                        value: Binding(get: { viewModel.settings.bolusFraction }, set: { v in viewModel.update { $0.bolusFraction = v } }),
+                        in: 0.3...1.0, step: 0.05)
+                Toggle("High override target raises sensitivity (exercise mode)", isOn: Binding(get: { viewModel.settings.highTargetRaisesSensitivity }, set: { v in viewModel.update { $0.highTargetRaisesSensitivity = v } }))
+                Toggle("Low override target lowers sensitivity", isOn: Binding(get: { viewModel.settings.lowTargetLowersSensitivity }, set: { v in viewModel.update { $0.lowTargetLowersSensitivity = v } }))
                 Toggle("Dynamic ISF", isOn: Binding(get: { viewModel.settings.dynamicISF }, set: { v in viewModel.update { $0.dynamicISF = v } }))
                 if viewModel.settings.dynamicISF {
                     Stepper(String(format: "Adjustment factor: %.2f", viewModel.settings.adjustmentFactor),
