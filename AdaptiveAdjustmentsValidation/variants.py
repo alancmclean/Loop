@@ -25,3 +25,13 @@ VARIANTS.update({
     "alan_v5": v(alan=True, arms=["adaptive"], features={"post_target", "tod"}, **V2),
     "alan_v5w": v(alan=True, arms=["adaptive"], features={"post_target", "tod"}, cfg=WIDE, **V2),
 })
+VARIANTS.update({
+    "alan_oref": v(alan=True, arms=["loop"], controller="oref"),
+    "alan_oref_cons": v(alan=True, arms=["loop"], controller="oref", oref={"dynamic_isf": False, "smb_fraction": 0.3}),
+    "alan_oref_v5": v(alan=True, arms=["adaptive"], controller="oref", features={"post_target", "tod"}, **V2),
+    "smoke_oref": v(alan=True, arms=["loop"], controller="oref"),
+})
+VARIANTS.update({
+    "alan_v5_end": v(alan=True, arms=["adaptive"], features={"post_target", "tod"}, ex_info="end", **V2),
+    "alan_v5_motion": v(alan=True, arms=["adaptive"], features={"post_target", "tod"}, ex_info="motion", **V2),
+})

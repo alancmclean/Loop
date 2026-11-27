@@ -29,7 +29,11 @@ def simulate(name, seed, days, learn_days, arm, variant=None):
     base_params = p._params.copy()
     basal = base_params.u2ss * base_params.BW / 6000 * 60   # U/h
     cr, isf = float(QUEST.loc[name, "CR"]) * variant.get("cr_mult", {}).get(name, 1.0), float(QUEST.loc[name, "CF"]) * variant.get("isf_mult", {}).get(name, 1.0)
-    ctl = LoopController(basal, isf, cr, max_bolus=variant.get("max_bolus", 10.0))
+    if variant.get("controller") == "oref":
+        from controller_oref import OrefController
+        ctl = OrefController(basal, isf, cr, **variant.get("oref", {}))
+    else:
+        ctl = LoopController(basal, isf, cr, max_bolus=variant.get("max_bolus", 10.0))
     rng = np.random.default_rng(seed + 999)
     noise = 0.0
     cfg = A.Config(**variant.get("cfg", {}))
@@ -64,9 +68,35 @@ def simulate(name, seed, days, learn_days, arm, variant=None):
     target_now = None
     feats = variant.get("features", set())
 
+    # What the phone can actually know about workouts at time t:
+    #   oracle  - the moment it starts (old, unrealistic)
+    #   end     - only after it ends + upload delay (Apple Health / Strava)
+    #   motion  - after ~10 min of motion-detected activity; end seen ~5 min after it ends;
+    #             plus occasional false detections (e.g. bumpy car rides)
+    ex_info = variant.get("ex_info", "oracle")
+    upload_delay = variant.get("upload_delay", 30)
+    fake = []
+    if ex_info == "motion":
+        frng = np.random.default_rng(seed + 77)
+        for d in range(days):
+            if frng.random() < 1 / 7:
+                fs = d * DAY + int(frng.uniform(8, 19) * 60)
+                fake.append((fs, fs + int(frng.uniform(12, 25))))
+    def visible_workouts(t):
+        out = []
+        for s_, e_ in list(w.workouts) + fake:
+            if ex_info == "end":
+                if t >= e_ + upload_delay: out.append((s_, e_))
+            elif ex_info == "motion":
+                if t >= s_ + 10:
+                    out.append((s_, e_ if t >= e_ + 5 else t + 1))
+            else:
+                if s_ <= t: out.append((s_, e_))
+        return out
+
     def ctx_until(t):
         return dict(
-            workouts=[x for x in w.workouts if x[0] <= t],
+            workouts=visible_workouts(t),
             nights=[x for x in w.nights if x[0] <= t],
             sites=[s for s in sites if s <= t],
             hrv=[x for x in w.hrv if x[0] <= t], rhr=[x for x in w.rhr if x[0] <= t], temp=[x for x in w.temp if x[0] <= t],
@@ -157,12 +187,12 @@ def simulate(name, seed, days, learn_days, arm, variant=None):
                 hod = int((t // 60) % 24)
                 if t % DAY == 3 * 60:
                     if "ride_prep" in feats:
-                        habits = A.ride_habits([x for x in w.workouts if x[0] <= t], t)
+                        habits = A.ride_habits(visible_workouts(t), t)
                     if "tod" in feats:
                         tod = A.update_tod_profile(tod, [x for x in cgm if x[0] >= t - 7 * DAY])
                 if "tod" in feats:
                     extra *= tod.get(hod, 1.0)
-                past_w = [x for x in w.workouts if x[0] <= t]
+                past_w = visible_workouts(t)
                 if "ride_prep" in feats and A.ride_prep_active(t, habits, past_w):
                     extra *= variant.get("prep_scale", 0.85); target_now = max(target_now or 0, 150)
                 if "post_target" in feats and A.post_exercise(t, past_w):
@@ -202,6 +232,11 @@ def simulate(name, seed, days, learn_days, arm, variant=None):
                 iob_hist.setdefault(int((t // 60) % 24), []).append(ctl.iob(t))
                 if len(iob_hist[int((t // 60) % 24)]) > 14 * 12:
                     iob_hist[int((t // 60) % 24)].pop(0)
+            if hasattr(ctl, "update_tdd") and t % 60 == 0 and t >= DAY:
+                d24 = sum(d["units"] for d in doses if d["t"] >= t - DAY)
+                span = min(7, t // DAY)
+                d7 = sum(d["units"] for d in doses if d["t"] >= t - span * DAY) / span
+                ctl.update_tdd(d24, d7)
             rate_uph, bolus = ctl.step(t, cgm, scale, target_now)
             sched = ctl.scheduled_basal(t, scale)
             # Net (vs scheduled, override-adjusted) insulin for the controller's model.

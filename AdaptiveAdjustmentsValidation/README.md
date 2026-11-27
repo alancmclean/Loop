@@ -54,4 +54,24 @@ Real-data replay of the new ideas (`replay_new.py`):
 - 44% of 4–9 pm lows occurred within 8 h after a ride → post-exercise target is on by default.
 - Stacking guard was active before 28% of lows vs 19% of random times (weak) → off by default.
 
+## Round 3: realistic exercise timing (correction)
+Earlier rounds let the simulated phone know about a workout the moment it started. On a real phone,
+Apple Health receives a workout only when it ends (Strava rides only after upload). Re-run with
+realistic visibility (`ex_info`), same world as round 2:
+
+| v5 (post-exercise target + time-of-day profile) | Δ TIR | Δ <70 | Δ >180 |
+|---|---|---|---|
+| Unrealistic: workout known at start (round 2 number) | +0.99 | −0.58 | −0.41 |
+| **Realistic: known 30 min after it ends** | **+0.84** | **−0.32** | −0.53 |
+| **Realistic + motion detection (known 10 min in, ~1 false detection/week)** | +0.55 | **−0.51** | −0.04 |
+
+So round 2 overstated the low reduction by about half. Live motion detection recovers most of it,
+at the cost of fewer high reductions (false detections, higher target during rides).
+
+Real data (`ride_timing.py`, 124 rides): 41 rides had a low during the ride or within 30 min of the end
+(before Health would know), 78 lows came 3–12 h after; 82% of rides started with >2 U of bolus insulin
+on board (median 3.5 U, median 76 min after a manual bolus).
+
+Not simulated yet: the 25%/2 h "Workout soon" defaults (round 2 tested 15%/90 min, automatic).
+
 Never commit health data to this repository.
