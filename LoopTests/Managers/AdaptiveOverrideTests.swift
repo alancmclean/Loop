@@ -362,7 +362,10 @@ final class AdaptiveOverrideTests: XCTestCase {
 
     func testSiteFailureDetected() {
         let now = h(3)
-        let g = stride(from: 0.0, through: 150, by: 5).map { AOGlucosePoint(date: m(-150 + $0, from: now), mgdl: 230 + $0 / 10) }
+        let g = stride(from: 0.0, through: 150, by: 5).map { (x: Double) -> AOGlucosePoint in
+            let value: Double = 230 + x / 10
+            return AOGlucosePoint(date: m(x - 150, from: now), mgdl: value)
+        }
         let doses = [AOInsulinDose(start: h(1), end: h(3), units: 4)]   // 2 U/h vs 1 U/h scheduled
         XCTAssertTrue(AOSiteFailureDetector().suspected(now: now, glucose: g, doses: doses, scheduledBasalUnits: 2, meals: []))
         XCTAssertFalse(AOSiteFailureDetector().suspected(now: now, glucose: g, doses: doses, scheduledBasalUnits: 2, meals: [h(2)]))
@@ -427,7 +430,10 @@ final class AdaptiveOverrideTests: XCTestCase {
         let iob2h = AOInsulinModel.onBoardFraction(after: 2 * 3600)
         XCTAssertGreaterThan(iob2h, 0.4); XCTAssertLessThan(iob2h, 0.75)
         // A constant 1 U/h delivered for 8 h acts at ~1 U/h by the end.
-        let doses = (0..<96).map { AOInsulinDose(start: m(Double($0 * 5), from: t0), end: m(Double($0 * 5 + 5), from: t0), units: 1.0 / 12) }
+        let doses = (0..<96).map { (i: Int) -> AOInsulinDose in
+            let minutes = Double(i * 5)
+            return AOInsulinDose(start: m(minutes, from: t0), end: m(minutes + 5, from: t0), units: 1.0 / 12)
+        }
         XCTAssertEqual(AOInsulinModel.activity(of: doses, in: h(7)..<h(8)), 1.0, accuracy: 0.02)
     }
 
@@ -437,14 +443,21 @@ final class AdaptiveOverrideTests: XCTestCase {
         var g: [AOGlucosePoint] = []
         var t = h(0)
         while t < h(24 * 31) { g.append(AOGlucosePoint(date: t, mgdl: 130)); t = m(5, from: t) }
-        let doses = (0..<(24 * 31)).map { AOInsulinDose(start: h(Double($0)), end: h(Double($0 + 1)), units: $0 < 24 * 30 ? 1.2 : 1.5) }
+        let doses = (0..<(24 * 31)).map { (i: Int) -> AOInsulinDose in
+            let hour = Double(i)
+            let units: Double = i < 24 * 30 ? 1.2 : 1.5
+            return AOInsulinDose(start: h(hour), end: h(hour + 1), units: units)
+        }
         let buckets = AOBucketBuilder(rules: rules).build(glucose: g, doses: doses, context: AOContext(), start: h(0), end: h(24 * 31))
         let est = AOAutosens().estimate(buckets: buckets, now: h(24 * 31), isf: { _ in 50 }, basal: { _ in 1.0 })
         XCTAssertEqual(est.hours, 24)
         XCTAssertGreaterThan(est.factor, 1.1)
         XCTAssertLessThan(est.factor, 1.25 * 1.0 + 0.01)
         // Steady 1.2 U/h every day → no adjustment, even though it's above scheduled basal.
-        let steady = (0..<(24 * 31)).map { AOInsulinDose(start: h(Double($0)), end: h(Double($0 + 1)), units: 1.2) }
+        let steady = (0..<(24 * 31)).map { (i: Int) -> AOInsulinDose in
+            let hour = Double(i)
+            return AOInsulinDose(start: h(hour), end: h(hour + 1), units: 1.2)
+        }
         let b2 = AOBucketBuilder(rules: rules).build(glucose: g, doses: steady, context: AOContext(), start: h(0), end: h(24 * 31))
         XCTAssertEqual(AOAutosens().estimate(buckets: b2, now: h(24 * 31), isf: { _ in 50 }, basal: { _ in 1.0 }).factor, 1.0, accuracy: 0.01)
     }
@@ -459,7 +472,10 @@ final class AdaptiveOverrideTests: XCTestCase {
             g.append(AOGlucosePoint(date: t, mgdl: (4...6).contains(hod) ? 110 + minute / 4 : 110))
             t = m(5, from: t)
         }
-        let doses = (0..<(24 * 14)).map { AOInsulinDose(start: h(Double($0)), end: h(Double($0 + 1)), units: 1.0) }
+        let doses = (0..<(24 * 14)).map { (i: Int) -> AOInsulinDose in
+            let hour = Double(i)
+            return AOInsulinDose(start: h(hour), end: h(hour + 1), units: 1.0)
+        }
         let buckets = AOBucketBuilder(rules: rules).build(glucose: g, doses: doses, context: AOContext(), start: h(0), end: h(24 * 14))
         let s = AOSettingsTuner().suggestBasal(buckets: buckets, isf: { _ in 50 }, basal: { _ in 1.0 })
         XCTAssertTrue(s.contains { $0.hour == 5 && $0.suggested > 1.0 })
