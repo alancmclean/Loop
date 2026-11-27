@@ -279,6 +279,14 @@ extension SettingsView {
                             descriptiveText: NSLocalizedString("Diabetes Treatment", comment: "Descriptive text for Therapy Settings"))
             }
 
+            NavigationLink(destination: OrefDosingView(viewModel: OrefDosingViewModel())) {
+                LargeButton(action: { },
+                            includeArrow: false,
+                            imageView: Image(systemName: "function").resizable().scaledToFit().foregroundColor(.accentColor).frame(width: 40, height: 40),
+                            label: NSLocalizedString("OpenAPS Dosing", comment: "Title text for button to OpenAPS dosing settings"),
+                            descriptiveText: NSLocalizedString("Trio's algorithm: shadow or active", comment: "Descriptive text for OpenAPS dosing settings"))
+            }
+
             if let adaptiveOverrideManager = AdaptiveOverrideManager.shared {
                 NavigationLink(destination: AdaptiveOverrideView(viewModel: AdaptiveOverrideViewModel(manager: adaptiveOverrideManager))) {
                     LargeButton(action: { },

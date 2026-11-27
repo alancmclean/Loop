@@ -69,6 +69,7 @@
 		1DB619AC270BAD3D006C9D07 /* VersionUpdateViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DB619AB270BAD3D006C9D07 /* VersionUpdateViewModel.swift */; };
 		1DDE273D24AEA4B000796622 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DB1CA4E24A56D7600B3B94C /* SettingsViewModel.swift */; };
 		1DDE273E24AEA4B000796622 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE09BA824A3E23F009EE9F9 /* SettingsView.swift */; };
+		D2F244A7C6BE52979CC91DB9 /* OrefDosingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 622493F492B7E2B781671D36 /* OrefDosingView.swift */; };
 		E70D741F7DA314C532DBCBF4 /* AdaptiveOverrideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BDD9DE0F16B14C9B0908389 /* AdaptiveOverrideView.swift */; };
 		1DDE274024AEA4F200796622 /* NotificationsCriticalAlertPermissionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DA46B5F2492E2E300D71A63 /* NotificationsCriticalAlertPermissionsView.swift */; };
 		1DFE9E172447B6270082C280 /* UserNotificationAlertSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DFE9E162447B6270082C280 /* UserNotificationAlertSchedulerTests.swift */; };
@@ -153,6 +154,7 @@
 		43A51E1F1EB6D62A000736CC /* CarbAbsorptionViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A51E1E1EB6D62A000736CC /* CarbAbsorptionViewController.swift */; };
 		43A51E211EB6DBDD000736CC /* LoopChartsTableViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A51E201EB6DBDD000736CC /* LoopChartsTableViewController.swift */; };
 		43A567691C94880B00334FAC /* LoopDataManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A567681C94880B00334FAC /* LoopDataManager.swift */; };
+		C2C839C4CAD2F31E7508E17D /* OrefDosing.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3771763C8872F8A1416DCEF /* OrefDosing.swift */; };
 		5FD55251F72E8F4AF8A450B2 /* AdaptiveOverrideManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C3F3062AD016A3F5C2B8DE2 /* AdaptiveOverrideManager.swift */; };
 		FAFF28FEAA8CA11F956A6CA0 /* AdaptiveOverrideDay.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8EA21D5A7B169D36B80D753 /* AdaptiveOverrideDay.swift */; };
 		42F02EA7458F5ACBBE0D0F80 /* AdaptiveOverrideMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD4C81E700D61A9CC5919691 /* AdaptiveOverrideMotion.swift */; };
@@ -458,6 +460,7 @@
 		C16DA84222E8E112008624C2 /* PluginManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16DA84122E8E112008624C2 /* PluginManager.swift */; };
 		C16FC0B02A99392F0025E239 /* live_capture_input.json in Resources */ = {isa = PBXBuildFile; fileRef = C16FC0AF2A99392F0025E239 /* live_capture_input.json */; };
 		C1735B1E2A0809830082BB8A /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = C1735B1D2A0809830082BB8A /* ZIPFoundation */; };
+		E2CC184C27D330980185B89A /* OrefAlgorithm in Frameworks */ = {isa = PBXBuildFile; productRef = A10F7889BDB4873551604079 /* OrefAlgorithm */; };
 		C1742332259BEADC00399C9D /* ManualEntryDoseView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1742331259BEADC00399C9D /* ManualEntryDoseView.swift */; };
 		C174233C259BEB0F00399C9D /* ManualEntryDoseViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C174233B259BEB0F00399C9D /* ManualEntryDoseViewModel.swift */; };
 		C1777A6625A125F100595963 /* ManualEntryDoseViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1777A6525A125F100595963 /* ManualEntryDoseViewModelTests.swift */; };
@@ -812,6 +815,7 @@
 		1DB619AB270BAD3D006C9D07 /* VersionUpdateViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionUpdateViewModel.swift; sourceTree = "<group>"; };
 		1DC63E7325351BDF004605DA /* TrueTime.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = TrueTime.framework; path = Carthage/Build/iOS/TrueTime.framework; sourceTree = "<group>"; };
 		1DE09BA824A3E23F009EE9F9 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		622493F492B7E2B781671D36 /* OrefDosingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrefDosingView.swift; sourceTree = "<group>"; };
 		4BDD9DE0F16B14C9B0908389 /* AdaptiveOverrideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveOverrideView.swift; sourceTree = "<group>"; };
 		1DFE9E162447B6270082C280 /* UserNotificationAlertSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserNotificationAlertSchedulerTests.swift; sourceTree = "<group>"; };
 		3ED319862EB659E600820BCF /* BasalViewActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BasalViewActivity.swift; sourceTree = "<group>"; };
@@ -900,6 +904,7 @@
 		43A51E1E1EB6D62A000736CC /* CarbAbsorptionViewController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CarbAbsorptionViewController.swift; sourceTree = "<group>"; };
 		43A51E201EB6DBDD000736CC /* LoopChartsTableViewController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = LoopChartsTableViewController.swift; sourceTree = "<group>"; };
 		43A567681C94880B00334FAC /* LoopDataManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; lineEnding = 0; path = LoopDataManager.swift; sourceTree = "<group>"; xcLanguageSpecificationIdentifier = xcode.lang.swift; };
+		B3771763C8872F8A1416DCEF /* OrefDosing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Oref/OrefDosing.swift; sourceTree = "<group>"; };
 		8C3F3062AD016A3F5C2B8DE2 /* AdaptiveOverrideManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveOverride/AdaptiveOverrideManager.swift; sourceTree = "<group>"; };
 		D8EA21D5A7B169D36B80D753 /* AdaptiveOverrideDay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveOverride/AdaptiveOverrideDay.swift; sourceTree = "<group>"; };
 		CD4C81E700D61A9CC5919691 /* AdaptiveOverrideMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveOverride/AdaptiveOverrideMotion.swift; sourceTree = "<group>"; };
@@ -1454,6 +1459,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E2CC184C27D330980185B89A /* OrefAlgorithm in Frameworks */,
 				C1D6EEA02A06C7270047DE5C /* MKRingProgressView in Frameworks */,
 				43F5C2C91B929C09003EB13D /* HealthKit.framework in Frameworks */,
 				43D9FFD621EAE05D00AF44BF /* LoopCore.framework in Frameworks */,
@@ -2006,6 +2012,7 @@
 				438D42FA1D7D11A4003244B0 /* PredictionInputEffectTableViewCell.swift */,
 				439706E522D2E84900C81566 /* PredictionSettingTableViewCell.swift */,
 				1DE09BA824A3E23F009EE9F9 /* SettingsView.swift */,
+				622493F492B7E2B781671D36 /* OrefDosingView.swift */,
 				4BDD9DE0F16B14C9B0908389 /* AdaptiveOverrideView.swift */,
 				DDC389FB2A2BC6670066E2E8 /* SettingsView+algorithmExperimentsSection.swift */,
 				C1DE5D22251BFC4D00439E49 /* SimpleBolusView.swift */,
@@ -2035,6 +2042,7 @@
 				A9C62D862331703000535612 /* LoggingServicesManager.swift */,
 				A9D5C5B525DC6C6A00534873 /* LoopAppManager.swift */,
 				43A567681C94880B00334FAC /* LoopDataManager.swift */,
+				B3771763C8872F8A1416DCEF /* OrefDosing.swift */,
 				8C3F3062AD016A3F5C2B8DE2 /* AdaptiveOverrideManager.swift */,
 				D8EA21D5A7B169D36B80D753 /* AdaptiveOverrideDay.swift */,
 				CD4C81E700D61A9CC5919691 /* AdaptiveOverrideMotion.swift */,
@@ -2765,6 +2773,7 @@
 				C1F00C5F285A802A006302C5 /* SwiftCharts */,
 				C1D6EE9F2A06C7270047DE5C /* MKRingProgressView */,
 				C1735B1D2A0809830082BB8A /* ZIPFoundation */,
+				A10F7889BDB4873551604079 /* OrefAlgorithm */,
 			);
 			productName = Loop;
 			productReference = 43776F8C1B8022E90074EA36 /* Loop.app */;
@@ -3448,6 +3457,7 @@
 				4F11D3C020DCBEEC006E072C /* GlucoseBackfillRequestUserInfo.swift in Sources */,
 				89E267FC2292456700A3F2AF /* FeatureFlags.swift in Sources */,
 				43A567691C94880B00334FAC /* LoopDataManager.swift in Sources */,
+				C2C839C4CAD2F31E7508E17D /* OrefDosing.swift in Sources */,
 				5FD55251F72E8F4AF8A450B2 /* AdaptiveOverrideManager.swift in Sources */,
 				FAFF28FEAA8CA11F956A6CA0 /* AdaptiveOverrideDay.swift in Sources */,
 				42F02EA7458F5ACBBE0D0F80 /* AdaptiveOverrideMotion.swift in Sources */,
@@ -3548,6 +3558,7 @@
 				435400341C9F878D00D5819C /* SetBolusUserInfo.swift in Sources */,
 				A9DCF32A25B0FABF00C89088 /* LoopUIColorPalette+Default.swift in Sources */,
 				1DDE273E24AEA4B000796622 /* SettingsView.swift in Sources */,
+				D2F244A7C6BE52979CC91DB9 /* OrefDosingView.swift in Sources */,
 				E70D741F7DA314C532DBCBF4 /* AdaptiveOverrideView.swift in Sources */,
 				A9B607B0247F000F00792BE4 /* UserNotifications+Loop.swift in Sources */,
 				84AB0A833008A62400A13446 /* SceneDelegate.swift in Sources */,
@@ -5040,6 +5051,10 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		A10F7889BDB4873551604079 /* OrefAlgorithm */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OrefAlgorithm;
+		};
 		C11B9D5A286778A800500CF8 /* SwiftCharts */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = C1CCF10B2858F4F70035389C /* XCRemoteSwiftPackageReference "SwiftCharts" */;

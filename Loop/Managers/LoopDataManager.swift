@@ -12,6 +12,7 @@ import HealthKit
 import LoopKit
 import LoopCore
 import WidgetKit
+import OrefAlgorithm
 
 protocol PresetActivationObserver: AnyObject {
     func presetActivated(context: TemporaryScheduleOverride.Context, duration: TemporaryScheduleOverride.Duration)
@@ -1871,7 +1872,25 @@ extension LoopDataManager {
                 dosingRecommendation = AutomaticDoseRecommendation(basalAdjustment: temp)
             }
 
-            if let dosingRecommendation = dosingRecommendation {
+            // OpenAPS (oref) dosing: shadow (compare only) or active (replaces Loop's recommendation).
+            var chosenRecommendation = dosingRecommendation
+            let orefSettings = OrefDosingSettings.current
+            if orefSettings.mode != .off {
+                let cycle = runOrefCycle(now: startDate, settings: orefSettings, loopRecommendation: dosingRecommendation,
+                                         basal: basalRateSchedule!, sensitivity: insulinSensitivity!,
+                                         targetRange: glucoseTargetRange!, maxBasal: maxBasal!, maxBolus: maxBolus!,
+                                         maxAutomaticBolus: min(iobHeadroom, maxBolus!), lastTempBasal: lastTempBasal,
+                                         rateRounder: rateRounder)
+                if orefSettings.mode == .active {
+                    if cycle.error == nil {
+                        chosenRecommendation = cycle.orefRecommendation
+                    } else {
+                        self.logger.error("oref failed, falling back to Loop's recommendation: %{public}@", cycle.error ?? "")
+                    }
+                }
+            }
+
+            if let dosingRecommendation = chosenRecommendation {
                 self.logger.default("Recommending dose: %{public}@ at %{public}@", String(describing: dosingRecommendation), String(describing: startDate))
                 recommendedAutomaticDose = (recommendation: dosingRecommendation, date: startDate)
             } else {
@@ -2614,3 +2633,87 @@ extension LoopDataManager: ServicesManagerDelegate {
     }
     
 }
+
+// MARK: - OpenAPS (oref) dosing
+
+extension LoopDataManager {
+    /// Runs oref on Loop's data. Must be called on the data access queue (like the rest of the dosing path).
+    fileprivate func runOrefCycle(now: Date, settings: OrefDosingSettings, loopRecommendation: AutomaticDoseRecommendation?,
+                                  basal: BasalRateSchedule, sensitivity: InsulinSensitivitySchedule,
+                                  targetRange: GlucoseRangeSchedule, maxBasal: Double, maxBolus: Double,
+                                  maxAutomaticBolus: Double, lastTempBasal: DoseEntry?,
+                                  rateRounder: @escaping (Double) -> Double) -> OrefCycle {
+        let group = DispatchGroup()
+        let historyStart = now.addingTimeInterval(-25 * 3600)
+        var glucose: [StoredGlucoseSample] = []
+        var doses: [DoseEntry] = []
+        var tdd24: Double?
+        var tdd7: Double?
+        var fetchError: String?
+
+        group.enter()
+        glucoseStore.getGlucoseSamples(start: historyStart, end: nil) { result in
+            switch result {
+            case .success(let samples): glucose = samples
+            case .failure(let error): fetchError = "glucose: \(error)"
+            }
+            group.leave()
+        }
+        group.enter()
+        doseStore.getNormalizedDoseEntries(start: historyStart, end: nil) { result in
+            switch result {
+            case .success(let entries): doses = entries
+            case .failure(let error): fetchError = "doses: \(error)"
+            }
+            group.leave()
+        }
+        group.enter()
+        doseStore.getTotalUnitsDelivered(since: now.addingTimeInterval(-24 * 3600)) { result in
+            if case .success(let value) = result { tdd24 = value.value }
+            group.leave()
+        }
+        group.enter()
+        doseStore.getTotalUnitsDelivered(since: now.addingTimeInterval(-7 * 24 * 3600)) { result in
+            if case .success(let value) = result { tdd7 = value.value / 7 }
+            group.leave()
+        }
+        _ = group.wait(timeout: .now() + 30)
+
+        func finish(_ result: OrefResult?, _ error: String?) -> OrefCycle {
+            var oref: AutomaticDoseRecommendation?
+            if let result {
+                oref = OrefDosingAdapter.recommendation(
+                    from: result, now: now, maxBasal: maxBasal, maxAutomaticBolus: maxAutomaticBolus,
+                    lastTempBasal: lastTempBasal, rateRounder: rateRounder,
+                    volumeRounder: { [weak self] in self?.delegate?.roundBolusVolume(units: $0) ?? $0 })
+            }
+            let cycle = OrefCycle(date: now, mode: settings.mode, result: result, error: error,
+                                  orefRecommendation: oref, loopRecommendation: loopRecommendation)
+            OrefDosingStatus.shared.record(cycle)
+            logger.default("oref [%{public}@]: %{public}@ | Loop: %{public}@ | %{public}@",
+                           settings.mode.rawValue, OrefDosingAdapter.describe(oref), OrefDosingAdapter.describe(loopRecommendation),
+                           result?.reason ?? (error ?? ""))
+            return cycle
+        }
+
+        if let fetchError { return finish(nil, fetchError) }
+        guard let carbRatio = carbRatioScheduleApplyingOverrideHistory else { return finish(nil, "no carb ratio schedule") }
+
+        var currentTemp: DoseEntry?
+        if case .some(.tempBasal(let dose)) = basalDeliveryState { currentTemp = dose }
+
+        let context = OrefDosingAdapter.Context(
+            now: now, glucose: glucose, doses: doses, carbs: recentCarbEntries ?? [],
+            basal: basal, sensitivity: sensitivity, carbRatio: carbRatio, targetRange: targetRange,
+            suspendThreshold: settings.mode == .off ? nil : self.settings.suspendThreshold?.quantity,
+            maxBasal: maxBasal, maxBolus: maxBolus, currentTemp: currentTemp, insulinType: pumpInsulinType,
+            reservoir: doseStore.lastReservoirValue?.unitVolume, tddLast24h: tdd24, tddAverage: tdd7)
+        do {
+            let result = try OrefEngine.determine(OrefDosingAdapter.inputs(context, settings: settings))
+            return finish(result, nil)
+        } catch {
+            return finish(nil, String(describing: error))
+        }
+    }
+}
+
