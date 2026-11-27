@@ -1903,6 +1903,17 @@ extension LoopDataManager {
                 }
             }
 
+            // Around rides and workouts: no automatic boluses during, smaller ones for a while after
+            // (Adaptive Adjustments sets this; applies to Loop's automatic bolus and OpenAPS's SMB alike).
+            let activityGuard = AOActivityGuard.shared.automaticBolusFactor(at: startDate)
+            if activityGuard.factor < 1, let rec = chosenRecommendation, let units = rec.bolusUnits, units > 0 {
+                let damped = self.delegate?.roundBolusVolume(units: units * activityGuard.factor) ?? units * activityGuard.factor
+                self.logger.default("Automatic bolus %.2f -> %.2f U (%{public}@)", units, damped, activityGuard.reason ?? "")
+                chosenRecommendation = (damped > 0 || rec.basalAdjustment != nil)
+                    ? AutomaticDoseRecommendation(basalAdjustment: rec.basalAdjustment, bolusUnits: damped > 0 ? damped : nil)
+                    : nil
+            }
+
             if let dosingRecommendation = chosenRecommendation {
                 self.logger.default("Recommending dose: %{public}@ at %{public}@", String(describing: dosingRecommendation), String(describing: startDate))
                 recommendedAutomaticDose = (recommendation: dosingRecommendation, date: startDate)

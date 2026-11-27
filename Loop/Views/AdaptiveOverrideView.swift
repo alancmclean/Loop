@@ -128,9 +128,10 @@ struct AdaptiveOverrideView: View {
     private var statusSection: some View {
         Section(header: Text("Now")) {
             if OrefDosingSettings.isActive {
-                Label("Paused while OpenAPS is dosing. Site alerts, pre-bolus reminders, learning and reports continue.", systemImage: "pause.circle")
-                    .foregroundColor(.secondary)
-            } else if !viewModel.config.enabled {
+                Label("OpenAPS is dosing: only activity adjustments (ride prediction, live ride detection, movement, bolus damping) run here. Alerts, reminders, learning and reports continue.", systemImage: "figure.outdoor.cycle")
+                    .font(.footnote).foregroundColor(.secondary)
+            }
+            if !viewModel.config.enabled {
                 Text("Off. Loop is using your normal settings.").foregroundColor(.secondary)
             } else {
                 HStack {
@@ -179,6 +180,8 @@ struct AdaptiveOverrideView: View {
             Toggle("Detect rides and runs live (motion sensors)", isOn: Binding(get: { viewModel.config.useMotionDetection }, set: { v in viewModel.update { $0.useMotionDetection = v } }))
             Toggle("Prepare for the ride home (learned)", isOn: Binding(get: { viewModel.config.predictRideHome }, set: { v in viewModel.update { $0.predictRideHome = v } }))
             Toggle("Quiet-day adjustment (learned)", isOn: Binding(get: { viewModel.config.quietDayAdjustment }, set: { v in viewModel.update { $0.quietDayAdjustment = v } }))
+            Toggle("Smaller automatic boluses around rides", isOn: Binding(get: { viewModel.config.dampAutomaticBolusesAroundActivity }, set: { v in viewModel.update { $0.dampAutomaticBolusesAroundActivity = v } }))
+            Toggle("Raise target before rides", isOn: Binding(get: { viewModel.config.prepRaisesTarget }, set: { v in viewModel.update { $0.prepRaisesTarget = v } }))
             Toggle("Higher target after exercise", isOn: Binding(get: { viewModel.config.postExerciseTarget }, set: { v in viewModel.update { $0.postExerciseTarget = v } }))
             Toggle("Time-of-day profile", isOn: Binding(get: { viewModel.config.useTimeOfDayProfile }, set: { v in viewModel.update { $0.useTimeOfDayProfile = v } }))
             Toggle("Auto-prepare at usual workout times", isOn: Binding(get: { viewModel.config.autoWorkoutPrep }, set: { v in viewModel.update { $0.autoWorkoutPrep = v } }))
@@ -190,7 +193,7 @@ struct AdaptiveOverrideView: View {
     }
 
     private var workoutSection: some View {
-        Section(header: Text("Workout"), footer: Text("Tap up to 90 minutes before a ride: 25% less insulin (including meal boluses) and a target of 150 for 2 hours. Rides and runs are also detected live from your iPhone's motion sensors after about 10 minutes, and the target stays at 150 for 3 hours after any workout.")) {
+        Section(header: Text("Workout"), footer: Text("Automatic: before a likely ride (learned from your mornings), and when a ride or run is detected by your iPhone's motion sensors, insulin is reduced by 25% (meal boluses too) with no change to your target. Automatic boluses pause during the ride and are half-size for 3 hours after, so Loop or OpenAPS don't over-correct the post-ride rise. The button below is optional, for rides it can't predict.")) {
             if let until = viewModel.workoutPrepUntil, until > Date() {
                 HStack {
                     Text("Workout prep on until \(until, style: .time)")

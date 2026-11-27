@@ -370,7 +370,8 @@ struct AOConfig: Codable, Equatable {
     var siteFailureAlerts = true
     var preBolusReminders = true
     /// Raise Loop's target after a workout is recorded (Loop backs off on its own; can't overshoot).
-    var postExerciseTarget = true
+    /// Off by default: high targets tend to lead to over-correction later (a roller coaster).
+    var postExerciseTarget = false
     var postExerciseTargetMgdl = 150.0
     var postExerciseWindow: TimeInterval = 3 * 3600
     /// Learn a time-of-day profile from where your lows and highs actually happen.
@@ -382,6 +383,13 @@ struct AOConfig: Codable, Equatable {
     /// the combination that worked best around exercise in an AID study (bolus −25% + announce 90 min before).
     var workoutPrepScale = 0.75
     var workoutPrepTargetMgdl = 150.0
+    /// Raise the target during workout prep / ride-home prep. Off by default (insulin reduction only).
+    var prepRaisesTarget = false
+    /// No automatic boluses while a ride/run is detected (and during prep), half-size for 3 h after.
+    /// Works with both Loop's and OpenAPS's automatic dosing; manual boluses are not affected.
+    var dampAutomaticBolusesAroundActivity = true
+    var postActivityBolusFactor = 0.5
+    var postActivityWindow: TimeInterval = 3 * 3600
     var workoutPrepDuration: TimeInterval = 2 * 3600
     /// Detect running and cycling live from the iPhone's motion sensors (Health only gets workouts when they end).
     var useMotionDetection = true
@@ -433,6 +441,10 @@ struct AOConfig: Codable, Equatable {
         useMotionDetection = try c.decodeIfPresent(Bool.self, forKey: .useMotionDetection) ?? d.useMotionDetection
         predictRideHome = try c.decodeIfPresent(Bool.self, forKey: .predictRideHome) ?? d.predictRideHome
         quietDayAdjustment = try c.decodeIfPresent(Bool.self, forKey: .quietDayAdjustment) ?? d.quietDayAdjustment
+        prepRaisesTarget = try c.decodeIfPresent(Bool.self, forKey: .prepRaisesTarget) ?? d.prepRaisesTarget
+        dampAutomaticBolusesAroundActivity = try c.decodeIfPresent(Bool.self, forKey: .dampAutomaticBolusesAroundActivity) ?? d.dampAutomaticBolusesAroundActivity
+        postActivityBolusFactor = try c.decodeIfPresent(Double.self, forKey: .postActivityBolusFactor) ?? d.postActivityBolusFactor
+        postActivityWindow = try c.decodeIfPresent(TimeInterval.self, forKey: .postActivityWindow) ?? d.postActivityWindow
     }
 }
 
@@ -691,5 +703,40 @@ extension AOInsulinModel {
             let mid = d.start.addingTimeInterval(d.end.timeIntervalSince(d.start) / 2)
             return total + d.units * onBoardFraction(after: date.timeIntervalSince(mid))
         }
+    }
+}
+
+// MARK: - Activity guard for automatic boluses (shared with LoopDataManager)
+
+/// How much of an automatic bolus (Loop's automatic bolus or OpenAPS's SMB) may be given right now.
+final class AOActivityGuard {
+    static let shared = AOActivityGuard()
+    private let lock = NSLock()
+    private var factor: Double = 1
+    private var reason: String?
+    private var updatedAt: Date = .distantPast
+
+    func set(factor: Double, reason: String?, at date: Date) {
+        lock.lock(); self.factor = factor; self.reason = reason; updatedAt = date; lock.unlock()
+    }
+
+    /// Stale values (layer not running) mean no damping.
+    func automaticBolusFactor(at date: Date) -> (factor: Double, reason: String?) {
+        lock.lock(); defer { lock.unlock() }
+        guard date.timeIntervalSince(updatedAt) < 10 * 60 else { return (1, nil) }
+        return (factor, reason)
+    }
+
+    /// 0 during a ride/run or its prep window, `postFactor` for `postWindow` after it ends, else 1.
+    static func factor(now: Date, workouts: [AOWorkout], prepActive: Bool, postFactor: Double,
+                       postWindow: TimeInterval) -> (Double, String?) {
+        if prepActive { return (0, "Ride or workout expected") }
+        if workouts.contains(where: { $0.start <= now && $0.end >= now.addingTimeInterval(-5 * 60) && $0.duration >= 10 * 60 }) {
+            return (0, "Riding / exercising")
+        }
+        if workouts.contains(where: { $0.end < now && now.timeIntervalSince($0.end) < postWindow && $0.duration >= 15 * 60 }) {
+            return (postFactor, "After exercise")
+        }
+        return (1, nil)
     }
 }

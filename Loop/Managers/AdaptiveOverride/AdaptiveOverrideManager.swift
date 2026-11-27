@@ -268,7 +268,12 @@ final class AdaptiveOverrideManager {
             context.meals = AOMealDetector().meals(glucose: glucose, doses: doses)
 
             let activeAll = rules.activeSignals(at: now, context: context)
-            let active = Set(activeAll.keys).subtracting(config.disabledSignals)
+            // With OpenAPS dosing, only the activity parts run: OpenAPS's own sensitivity detection
+            // covers the rest, and it can't see a ride coming or happening.
+            let orefActive = OrefDosingSettings.isActive
+            let activitySignals: Set<AOSignal> = [.exerciseEarly, .exerciseLate, .recentMovement]
+            var active = Set(activeAll.keys).subtracting(config.disabledSignals)
+            if orefActive { active = active.intersection(activitySignals) }
 
             let recentBuckets = AOBucketBuilder(rules: rules).build(glucose: glucose, doses: doses, context: context, start: dayAgo, end: now)
             let autosens = AOAutosens().estimate(buckets: recentBuckets, now: now,
@@ -286,7 +291,7 @@ final class AdaptiveOverrideManager {
             var extras: [(reason: String, factor: Double)] = []
             var targetFloor: Double?
             func raiseTarget(_ value: Double) { targetFloor = max(targetFloor ?? 0, value) }
-            if config.useTimeOfDayProfile {
+            if config.useTimeOfDayProfile && !orefActive {
                 extras.append((reason: "Time of day", factor: timeOfDayProfile.factor(at: now, calendar: rules.calendar)))
             }
             let workoutStartedRecently = context.workouts.contains { $0.end > now.addingTimeInterval(-config.postExerciseWindow) }
@@ -303,7 +308,7 @@ final class AdaptiveOverrideManager {
             }
             if prep {
                 extras.append((reason: "Workout soon", factor: config.workoutPrepScale))
-                raiseTarget(config.workoutPrepTargetMgdl)
+                if config.prepRaisesTarget { raiseTarget(config.workoutPrepTargetMgdl) }
             }
             if config.postExerciseTarget && workoutStartedRecently {
                 raiseTarget(config.postExerciseTargetMgdl)
@@ -323,10 +328,11 @@ final class AdaptiveOverrideManager {
                 dayForecast = "Ride home likely around \(time) (\(Int((forecast.probability * 100).rounded()))%)"
                 if forecast.probability >= 0.6 && forecast.window.contains(now) {
                     extras.append((reason: "Ride home likely", factor: config.workoutPrepScale))
-                    raiseTarget(config.workoutPrepTargetMgdl)
+                    if config.prepRaisesTarget { raiseTarget(config.workoutPrepTargetMgdl) }
+                    prep = true
                 }
             }
-            if config.quietDayAdjustment, todaysRides.isEmpty, let isfNow = isf(at: now) {
+            if config.quietDayAdjustment, !orefActive, todaysRides.isEmpty, let isfNow = isf(at: now) {
                 let hour = rules.calendar.component(.hour, from: now)
                 let stepsBefore10 = hour >= 10 ? AOSignalRules.steps(in: context.steps, before: dayStart.addingTimeInterval(10 * 3600), window: 10 * 3600) : nil
                 let pQuiet = dayModel.sedentaryProbability(now: now, rodeToday: false, stepsBefore10: stepsBefore10)
@@ -337,7 +343,7 @@ final class AdaptiveOverrideManager {
                     extras.append((reason: "Quiet day", factor: 1 + (factor - 1) * pQuiet))
                 }
             }
-            if config.stackingGuard {
+            if config.stackingGuard && !orefActive {
                 let hour = rules.calendar.component(.hour, from: now)
                 if AOStackingGuard().active(iob: AOInsulinModel.onBoard(doses, at: now), typicalIOB: typicalIOB[hour],
                                             glucose: glucose.filter { $0.date >= now.addingTimeInterval(-20 * 60) }) {
@@ -346,11 +352,18 @@ final class AdaptiveOverrideManager {
                 }
             }
 
-            // When OpenAPS is dosing, this layer stops changing insulin (OpenAPS has its own sensitivity
-            // handling), but keeps alerts, reminders, learning and reports.
-            let orefActive = OrefDosingSettings.isActive
+            // Automatic-bolus damping around activity (read by LoopDataManager for both algorithms).
+            if config.enabled && config.dampAutomaticBolusesAroundActivity {
+                let g = AOActivityGuard.factor(now: now, workouts: context.workouts, prepActive: prep,
+                                               postFactor: config.postActivityBolusFactor, postWindow: config.postActivityWindow)
+                AOActivityGuard.shared.set(factor: g.0, reason: g.1, at: now)
+            } else {
+                AOActivityGuard.shared.set(factor: 1, reason: nil, at: now)
+            }
+
+            // With OpenAPS dosing: activity only (signals above), no recent-sensitivity estimate.
             var dosingConfig = config
-            if orefActive { dosingConfig.enabled = false }
+            if orefActive { dosingConfig.useAutosens = false }
 
             let decision = AODecisionEngine(config: dosingConfig).decide(AODecisionInput(
                 now: now,
@@ -377,8 +390,7 @@ final class AdaptiveOverrideManager {
 
             status = AOStatus(updatedAt: now, activeSignals: active.sorted(), autosens: autosens.factor,
                               autosensHours: autosens.hours, appliedScale: applied,
-                              lastDecision: orefActive ? "Paused: OpenAPS is dosing. Alerts, reminders and learning continue."
-                                                       : Self.describe(decision, mode: config.mode),
+                              lastDecision: (orefActive ? "OpenAPS mode — activity adjustments only. " : "") + Self.describe(decision, mode: config.mode),
                               siteFailureSuspected: siteFailure,
                               dayForecast: dayForecast)
         } catch {
