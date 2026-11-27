@@ -67,6 +67,7 @@ def simulate(name, seed, days, learn_days, arm, variant=None):
     iob_hist = {}
     target_now = None
     feats = variant.get("features", set())
+    bolus_cap_factor = 1.0
 
     # What the phone can actually know about workouts at time t:
     #   oracle  - the moment it starts (old, unrealistic)
@@ -194,7 +195,14 @@ def simulate(name, seed, days, learn_days, arm, variant=None):
                     extra *= tod.get(hod, 1.0)
                 past_w = visible_workouts(t)
                 if "ride_prep" in feats and A.ride_prep_active(t, habits, past_w):
-                    extra *= variant.get("prep_scale", 0.85); target_now = max(target_now or 0, 150)
+                    extra *= variant.get("prep_scale", 0.85)
+                    if not variant.get("no_targets"): target_now = max(target_now or 0, 150)
+                # Post-ride correction damping: during a ride no automatic boluses; for 3 h after, half size.
+                bolus_cap_factor = 1.0
+                if "post_cap" in feats:
+                    for s_, e_ in past_w:
+                        if s_ <= t <= e_ + 5: bolus_cap_factor = 0.0
+                        elif e_ < t < e_ + 180: bolus_cap_factor = min(bolus_cap_factor, 0.5)
                 if "post_target" in feats and A.post_exercise(t, past_w):
                     target_now = max(target_now or 0, 150)
                 if "stack_guard" in feats:
@@ -238,6 +246,8 @@ def simulate(name, seed, days, learn_days, arm, variant=None):
                 d7 = sum(d["units"] for d in doses if d["t"] >= t - span * DAY) / span
                 ctl.update_tdd(d24, d7)
             rate_uph, bolus = ctl.step(t, cgm, scale, target_now)
+            if arm == "adaptive" and t >= learn_days * DAY and "post_cap" in feats:
+                bolus = round(bolus * bolus_cap_factor / 0.05) * 0.05
             sched = ctl.scheduled_basal(t, scale)
             # Net (vs scheduled, override-adjusted) insulin for the controller's model.
             ctl.record_delivery(t, (rate_uph - sched) * 5 / 60 + bolus)

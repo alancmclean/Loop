@@ -74,4 +74,19 @@ on board (median 3.5 U, median 76 min after a manual bolus).
 
 Not simulated yet: the 25%/2 h "Workout soon" defaults (round 2 tested 15%/90 min, automatic).
 
+## Round 4: activity without high targets
+Realistic exercise timing with motion detection (as round 3), person-like world. Changes vs plain Loop:
+
+| Version | Δ TIR | Δ <70 | Δ >180 |
+|---|---|---|---|
+| Round 3: targets 150 + time-of-day + motion | +0.55 | −0.51 | −0.04 |
+| No targets: 25% less insulin before/during rides, no auto-boluses during, half-size 3 h after | +0.46 | −0.25 | −0.21 |
+| **No targets + time-of-day profile (new default in Loop mode)** | **+1.23** | **−0.56** | **−0.67** |
+
+All 6 virtual patients improved time in range with the new default. In OpenAPS mode only the activity
+parts run (row 2 is the closest simulated equivalent, but the simulator's controller is Loop-like).
+
+Real data (`rollercoaster.py`): 40% of highs were followed by a low within 5 h, and 25% of lows by a
+high within 3 h; insulin in the 2 h after a high was similar whether or not it ended low (~5 U).
+
 Never commit health data to this repository.

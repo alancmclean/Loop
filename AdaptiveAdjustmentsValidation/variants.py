@@ -35,3 +35,13 @@ VARIANTS.update({
     "alan_v5_end": v(alan=True, arms=["adaptive"], features={"post_target", "tod"}, ex_info="end", **V2),
     "alan_v5_motion": v(alan=True, arms=["adaptive"], features={"post_target", "tod"}, ex_info="motion", **V2),
 })
+VARIANTS.update({
+    # No high targets: scale-only prep (25% less, also shrinks meal boluses), live motion detection,
+    # learned exercise factors, no automatic boluses during rides and half-size for 3 h after.
+    "alan_activity_noTarget": v(alan=True, arms=["adaptive"], features={"ride_prep", "post_cap"}, ex_info="motion",
+                                prep_scale=0.75, no_targets=True, **V2),
+})
+VARIANTS.update({
+    "alan_activity_noTarget_tod": v(alan=True, arms=["adaptive"], features={"ride_prep", "post_cap", "tod"}, ex_info="motion",
+                                    prep_scale=0.75, no_targets=True, **V2),
+})
