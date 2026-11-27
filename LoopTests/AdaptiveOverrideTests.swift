@@ -245,6 +245,34 @@ final class AdaptiveOverrideTests: XCTestCase {
         XCTAssertFalse(AOStackingGuard().active(iob: 6, typicalIOB: nil, glucose: flat))
     }
 
+    func testMotionSessionsDetectOngoingRide() {
+        let d = AOMotionWorkoutDetector()
+        let samples = [
+            AOMotionSample(start: m(0, from: t0), kind: .other, confidence: 2),
+            AOMotionSample(start: m(10, from: t0), kind: .cycling, confidence: 2),
+            AOMotionSample(start: m(22, from: t0), kind: .other, confidence: 1),     // 2-min stop at a light
+            AOMotionSample(start: m(24, from: t0), kind: .cycling, confidence: 1),
+        ]
+        // Still riding at +40 min → one ongoing session from +10 to now.
+        let s = d.sessions(from: samples, now: m(40, from: t0))
+        XCTAssertEqual(s, [AOWorkout(start: m(10, from: t0), end: m(40, from: t0))])
+        // Only 8 minutes so far → not yet.
+        XCTAssertTrue(d.sessions(from: Array(samples.prefix(2)), now: m(18, from: t0)).isEmpty)
+        // Low confidence or other activities don't count.
+        XCTAssertTrue(d.sessions(from: [AOMotionSample(start: t0, kind: .cycling, confidence: 0)], now: m(30, from: t0)).isEmpty)
+    }
+
+    func testMotionMergePrefersHealthWorkouts() {
+        let health = [AOWorkout(start: m(5, from: t0), end: m(45, from: t0))]
+        let motion = [AOWorkout(start: m(10, from: t0), end: m(44, from: t0)), AOWorkout(start: h(5), end: h(5.5))]
+        XCTAssertEqual(AOMotionWorkoutDetector.merge(health: health, motion: motion), [health[0], motion[1]])
+    }
+
+    func testOngoingMotionRideActivatesExerciseSignal() {
+        let ongoing = AOWorkout(start: m(-20, from: t0), end: t0)
+        XCTAssertEqual(signals(at: t0, AOContext(workouts: [ongoing])), [.exerciseEarly])
+    }
+
     // MARK: Site failure
 
     func testSiteFailureDetected() {

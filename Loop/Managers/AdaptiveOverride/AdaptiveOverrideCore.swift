@@ -368,9 +368,13 @@ struct AOConfig: Codable, Equatable {
     /// Learn your usual workout times and prepare beforehand. Off by default: on real data
     /// only ~30% of predicted windows were followed by a workout. Use "Workout soon" instead.
     var autoWorkoutPrep = false
-    var workoutPrepScale = 0.85
+    /// 25% less insulin (basal, and meal boluses via the carb ratio) from up to 90 minutes before:
+    /// the combination that worked best around exercise in an AID study (bolus −25% + announce 90 min before).
+    var workoutPrepScale = 0.75
     var workoutPrepTargetMgdl = 150.0
-    var workoutPrepDuration: TimeInterval = 90 * 60
+    var workoutPrepDuration: TimeInterval = 2 * 3600
+    /// Detect running and cycling live from the iPhone's motion sensors (Health only gets workouts when they end).
+    var useMotionDetection = true
     /// Raise target when insulin on board is unusually high for the time of day and glucose
     /// isn't rising. Off by default: weak predictor of lows on real data.
     var stackingGuard = false
@@ -412,6 +416,7 @@ struct AOConfig: Codable, Equatable {
         workoutPrepTargetMgdl = try c.decodeIfPresent(Double.self, forKey: .workoutPrepTargetMgdl) ?? d.workoutPrepTargetMgdl
         workoutPrepDuration = try c.decodeIfPresent(TimeInterval.self, forKey: .workoutPrepDuration) ?? d.workoutPrepDuration
         stackingGuard = try c.decodeIfPresent(Bool.self, forKey: .stackingGuard) ?? d.stackingGuard
+        useMotionDetection = try c.decodeIfPresent(Bool.self, forKey: .useMotionDetection) ?? d.useMotionDetection
     }
 }
 

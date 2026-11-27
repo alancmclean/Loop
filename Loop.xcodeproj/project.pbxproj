@@ -154,6 +154,7 @@
 		43A51E211EB6DBDD000736CC /* LoopChartsTableViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A51E201EB6DBDD000736CC /* LoopChartsTableViewController.swift */; };
 		43A567691C94880B00334FAC /* LoopDataManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A567681C94880B00334FAC /* LoopDataManager.swift */; };
 		5FD55251F72E8F4AF8A450B2 /* AdaptiveOverrideManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C3F3062AD016A3F5C2B8DE2 /* AdaptiveOverrideManager.swift */; };
+		42F02EA7458F5ACBBE0D0F80 /* AdaptiveOverrideMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD4C81E700D61A9CC5919691 /* AdaptiveOverrideMotion.swift */; };
 		5AD21BD8A1B51CB544B62C4F /* AdaptiveOverrideLearning.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB67CAA217F33BA697596D5A /* AdaptiveOverrideLearning.swift */; };
 		E516C59369836CA1F6761767 /* AdaptiveOverrideCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE7321D7F36CB5DA8DD9801B /* AdaptiveOverrideCore.swift */; };
 		43A943761B926B7B0051FA24 /* Interface.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 43A943741B926B7B0051FA24 /* Interface.storyboard */; };
@@ -899,6 +900,7 @@
 		43A51E201EB6DBDD000736CC /* LoopChartsTableViewController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = LoopChartsTableViewController.swift; sourceTree = "<group>"; };
 		43A567681C94880B00334FAC /* LoopDataManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; lineEnding = 0; path = LoopDataManager.swift; sourceTree = "<group>"; xcLanguageSpecificationIdentifier = xcode.lang.swift; };
 		8C3F3062AD016A3F5C2B8DE2 /* AdaptiveOverrideManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveOverride/AdaptiveOverrideManager.swift; sourceTree = "<group>"; };
+		CD4C81E700D61A9CC5919691 /* AdaptiveOverrideMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveOverride/AdaptiveOverrideMotion.swift; sourceTree = "<group>"; };
 		CB67CAA217F33BA697596D5A /* AdaptiveOverrideLearning.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveOverride/AdaptiveOverrideLearning.swift; sourceTree = "<group>"; };
 		AE7321D7F36CB5DA8DD9801B /* AdaptiveOverrideCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveOverride/AdaptiveOverrideCore.swift; sourceTree = "<group>"; };
 		43A8EC6E210E622600A81379 /* CGMBLEKitUI.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; path = CGMBLEKitUI.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -2032,6 +2034,7 @@
 				A9D5C5B525DC6C6A00534873 /* LoopAppManager.swift */,
 				43A567681C94880B00334FAC /* LoopDataManager.swift */,
 				8C3F3062AD016A3F5C2B8DE2 /* AdaptiveOverrideManager.swift */,
+				CD4C81E700D61A9CC5919691 /* AdaptiveOverrideMotion.swift */,
 				CB67CAA217F33BA697596D5A /* AdaptiveOverrideLearning.swift */,
 				AE7321D7F36CB5DA8DD9801B /* AdaptiveOverrideCore.swift */,
 				43C094491CACCC73001F6403 /* NotificationManager.swift */,
@@ -3443,6 +3446,7 @@
 				89E267FC2292456700A3F2AF /* FeatureFlags.swift in Sources */,
 				43A567691C94880B00334FAC /* LoopDataManager.swift in Sources */,
 				5FD55251F72E8F4AF8A450B2 /* AdaptiveOverrideManager.swift in Sources */,
+				42F02EA7458F5ACBBE0D0F80 /* AdaptiveOverrideMotion.swift in Sources */,
 				5AD21BD8A1B51CB544B62C4F /* AdaptiveOverrideLearning.swift in Sources */,
 				E516C59369836CA1F6761767 /* AdaptiveOverrideCore.swift in Sources */,
 				1DA649A9244126DA00F61E75 /* InAppModalAlertScheduler.swift in Sources */,

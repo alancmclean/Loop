@@ -62,6 +62,7 @@ final class AdaptiveOverrideManager {
     private let siteAlertCooldown: TimeInterval = 3 * 3600
 
     private var timer: Timer?
+    private let motion = AOMotionActivityReader()
     /// Target floor wanted by the latest update (used when building / refreshing our override).
     private var desiredTargetFloor: Double?
     private var observerQueries: [HKObserverQuery] = []
@@ -114,6 +115,7 @@ final class AdaptiveOverrideManager {
                 save(nil as AOBaselineSnapshot?, .snapshot)
                 save(nil as AOLearnedFactors?, .factors)
                 requestHealthAuthorization()
+                if newValue.useMotionDetection { motion.requestAuthorization() }
             }
             Task { await update() }
         }
@@ -568,8 +570,12 @@ final class AdaptiveOverrideManager {
         async let sleep = fetchSleep(start: start.addingTimeInterval(-24 * 3600), end: end)
         async let pumpSites = fetchPumpSiteChanges(since: start.addingTimeInterval(-10 * 24 * 3600))
         async let physiology = fetchPhysiology(days: physiologyDays, now: now)
+        // Motion log covers the last 7 days at most; recent hours are what matter for live detection.
+        let motionStart = max(start, now.addingTimeInterval(-13 * 3600))
         let (w, s, p, phys) = try await (workouts, sleep, pumpSites, physiology)
-        return AOContext(workouts: w, nights: rules.nights(from: s),
+        let motionSamples: [AOMotionSample] = config.useMotionDetection ? await motion.samples(from: motionStart, to: end) : []
+        let liveSessions = AOMotionWorkoutDetector().sessions(from: motionSamples, now: end)
+        return AOContext(workouts: AOMotionWorkoutDetector.merge(health: w, motion: liveSessions), nights: rules.nights(from: s),
                          siteChanges: mergeSiteChanges(pump: p, manual: manualSiteChanges),
                          hrv: phys.hrv, restingHeartRate: phys.rhr, wristTemperature: phys.temp,
                          logs: logs)

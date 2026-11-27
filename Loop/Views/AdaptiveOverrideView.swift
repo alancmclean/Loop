@@ -170,6 +170,7 @@ struct AdaptiveOverrideView: View {
             Stepper("Highest: \(pct(viewModel.config.effectiveRange.upperBound))",
                     value: Binding(get: { viewModel.config.maxScale }, set: { v in viewModel.update { $0.maxScale = v } }),
                     in: 1.0...AOConfig.absoluteMaxScale, step: 0.05)
+            Toggle("Detect rides and runs live (motion sensors)", isOn: Binding(get: { viewModel.config.useMotionDetection }, set: { v in viewModel.update { $0.useMotionDetection = v } }))
             Toggle("Higher target after exercise", isOn: Binding(get: { viewModel.config.postExerciseTarget }, set: { v in viewModel.update { $0.postExerciseTarget = v } }))
             Toggle("Time-of-day profile", isOn: Binding(get: { viewModel.config.useTimeOfDayProfile }, set: { v in viewModel.update { $0.useTimeOfDayProfile = v } }))
             Toggle("Auto-prepare at usual workout times", isOn: Binding(get: { viewModel.config.autoWorkoutPrep }, set: { v in viewModel.update { $0.autoWorkoutPrep = v } }))
@@ -181,7 +182,7 @@ struct AdaptiveOverrideView: View {
     }
 
     private var workoutSection: some View {
-        Section(header: Text("Workout"), footer: Text("Before a ride or workout: 15% less insulin and a target of 150 for 90 minutes, ending early once Health records the workout. After any recorded workout, the target is raised to 150 for 3 hours.")) {
+        Section(header: Text("Workout"), footer: Text("Tap up to 90 minutes before a ride: 25% less insulin (including meal boluses) and a target of 150 for 2 hours. Rides and runs are also detected live from your iPhone's motion sensors after about 10 minutes, and the target stays at 150 for 3 hours after any workout.")) {
             if let until = viewModel.workoutPrepUntil, until > Date() {
                 HStack {
                     Text("Workout prep on until \(until, style: .time)")

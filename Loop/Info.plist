@@ -65,6 +65,8 @@
 	<string>Camera is used to scan barcodes of devices.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Face ID is used to authenticate insulin bolus and to save changes to therapy settings.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Motion activity (cycling and running) is used by Adaptive Adjustments to detect exercise while it is happening and reduce insulin.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Meal data from the Health database is used to determine glucose effects. Glucose data from the Health database is used for graphing and momentum calculation. Sleep data from the Health database is used to optimize delivery of Apple Watch complication updates during the time you are awake.</string>
 	<key>NSHealthUpdateUsageDescription</key>
