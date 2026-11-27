@@ -1471,8 +1471,14 @@ extension LoopDataManager {
             return nil
         }
         if OrefDosingSettings.isActive {
-            return try orefManualBolus(manualGlucose: glucose.quantity.doubleValue(for: .milligramsPerDeciliter),
-                                       potentialCarbEntry: potentialCarbEntry, replacedCarbEntry: replacedCarbEntry)
+            // If OpenAPS has no fresh result (error or stale cycle), fall back to Loop's calculation
+            // rather than showing no recommendation at all.
+            do {
+                return try orefManualBolus(manualGlucose: glucose.quantity.doubleValue(for: .milligramsPerDeciliter),
+                                           potentialCarbEntry: potentialCarbEntry, replacedCarbEntry: replacedCarbEntry)
+            } catch {
+                logger.error("OpenAPS bolus calculation unavailable, using Loop's: %{public}@", String(describing: error))
+            }
         }
 
         let pendingInsulin = try getPendingInsulin()
@@ -1490,7 +1496,11 @@ extension LoopDataManager {
             return nil
         }
         if OrefDosingSettings.isActive {
-            return try orefManualBolus(manualGlucose: nil, potentialCarbEntry: potentialCarbEntry, replacedCarbEntry: replacedCarbEntry)
+            do {
+                return try orefManualBolus(manualGlucose: nil, potentialCarbEntry: potentialCarbEntry, replacedCarbEntry: replacedCarbEntry)
+            } catch {
+                logger.error("OpenAPS bolus calculation unavailable, using Loop's: %{public}@", String(describing: error))
+            }
         }
 
         let pendingInsulin = try getPendingInsulin()
