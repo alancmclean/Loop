@@ -53,7 +53,9 @@ final class OrefDosingViewModel: ObservableObject {
 }
 
 struct OrefDosingView: View {
-    @ObservedObject var viewModel: OrefDosingViewModel
+    // Owned here (not passed in), so the Settings screen re-rendering doesn't replace it
+    // and dismiss the confirmation alert.
+    @StateObject private var viewModel = OrefDosingViewModel()
 
     var body: some View {
         List {

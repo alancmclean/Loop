@@ -279,7 +279,7 @@ extension SettingsView {
                             descriptiveText: NSLocalizedString("Diabetes Treatment", comment: "Descriptive text for Therapy Settings"))
             }
 
-            NavigationLink(destination: OrefDosingView(viewModel: OrefDosingViewModel())) {
+            NavigationLink(destination: OrefDosingView()) {
                 LargeButton(action: { },
                             includeArrow: false,
                             imageView: Image(systemName: "function").resizable().scaledToFit().foregroundColor(.accentColor).frame(width: 40, height: 40),
@@ -288,7 +288,7 @@ extension SettingsView {
             }
 
             if let adaptiveOverrideManager = AdaptiveOverrideManager.shared {
-                NavigationLink(destination: AdaptiveOverrideView(viewModel: AdaptiveOverrideViewModel(manager: adaptiveOverrideManager))) {
+                NavigationLink(destination: AdaptiveOverrideView(manager: adaptiveOverrideManager)) {
                     LargeButton(action: { },
                                 includeArrow: false,
                                 imageView: Image(systemName: "waveform.path.ecg").resizable().scaledToFit().foregroundColor(.accentColor).frame(width: 40, height: 40),

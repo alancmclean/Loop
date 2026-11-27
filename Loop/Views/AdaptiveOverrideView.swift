@@ -94,7 +94,11 @@ final class AdaptiveOverrideViewModel: ObservableObject {
 }
 
 struct AdaptiveOverrideView: View {
-    @ObservedObject var viewModel: AdaptiveOverrideViewModel
+    @StateObject private var viewModel: AdaptiveOverrideViewModel
+
+    init(manager: AdaptiveOverrideManager) {
+        _viewModel = StateObject(wrappedValue: AdaptiveOverrideViewModel(manager: manager))
+    }
     @State private var newLocation = ""
     @State private var confirmAutomatic = false
 
