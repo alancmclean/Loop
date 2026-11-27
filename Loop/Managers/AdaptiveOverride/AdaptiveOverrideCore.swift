@@ -85,6 +85,8 @@ struct AOContext {
     var wristTemperature: [AOMetricSample] = []
     var logs: [AOLogEntry] = []
     var meals: [Date] = []
+    /// Step counts (hourly totals from Health, plus a live pedometer top-up for the last 2 h).
+    var steps: [AOMetricSample] = []
 }
 
 // MARK: - Signals
@@ -104,6 +106,8 @@ struct AOSignal: Hashable, Codable, Comparable {
     static let illness = AOSignal(id: "illness")
     static let stress = AOSignal(id: "stress")
     static let weekend = AOSignal(id: "weekend")
+    /// 1,000+ steps in the last 2 hours (walking around, errands).
+    static let recentMovement = AOSignal(id: "recentMovement")
 
     static func siteLocation(_ name: String) -> AOSignal {
         AOSignal(id: locationPrefix + name.trimmingCharacters(in: .whitespaces).lowercased())
@@ -128,6 +132,7 @@ struct AOSignal: Hashable, Codable, Comparable {
         case .illness: return "Sick (logged)"
         case .stress: return "Stress (logged)"
         case .weekend: return "Weekend"
+        case .recentMovement: return "Moving around (last 2 h)"
         default:
             if id.hasPrefix(Self.locationPrefix) {
                 return "Site: " + id.dropFirst(Self.locationPrefix.count).capitalized
@@ -154,6 +159,7 @@ struct AOSignalRules {
     var illnessWindow: TimeInterval = 24 * 3600
     var stressWindow: TimeInterval = 6 * 3600
     var physiologyBaselineDays: Double = 30
+    var recentMovementSteps: Double = 1000
     var minBaselineSamples = 7
     var calendar = Calendar.current
 
@@ -269,6 +275,10 @@ struct AOSignalRules {
             }
         }
 
+        if AOSignalRules.steps(in: c.steps, before: date) >= recentMovementSteps {
+            result[.recentMovement] = calendar.dateInterval(of: .hour, for: date)?.start ?? date
+        }
+
         // Weekend is not used as a signal: in simulation it produced false patterns
         // (e.g. "40% less insulin on weekends" with no real effect), and on real data it showed none.
         return result
@@ -375,6 +385,10 @@ struct AOConfig: Codable, Equatable {
     var workoutPrepDuration: TimeInterval = 2 * 3600
     /// Detect running and cycling live from the iPhone's motion sensors (Health only gets workouts when they end).
     var useMotionDetection = true
+    /// After a morning ride, prepare before your usual ride-home time (learned, ~78% accurate on your data).
+    var predictRideHome = true
+    /// Small learned increase on days that look quiet and sedentary (updated through the day).
+    var quietDayAdjustment = true
     /// Raise target when insulin on board is unusually high for the time of day and glucose
     /// isn't rising. Off by default: weak predictor of lows on real data.
     var stackingGuard = false
@@ -417,6 +431,8 @@ struct AOConfig: Codable, Equatable {
         workoutPrepDuration = try c.decodeIfPresent(TimeInterval.self, forKey: .workoutPrepDuration) ?? d.workoutPrepDuration
         stackingGuard = try c.decodeIfPresent(Bool.self, forKey: .stackingGuard) ?? d.stackingGuard
         useMotionDetection = try c.decodeIfPresent(Bool.self, forKey: .useMotionDetection) ?? d.useMotionDetection
+        predictRideHome = try c.decodeIfPresent(Bool.self, forKey: .predictRideHome) ?? d.predictRideHome
+        quietDayAdjustment = try c.decodeIfPresent(Bool.self, forKey: .quietDayAdjustment) ?? d.quietDayAdjustment
     }
 }
 

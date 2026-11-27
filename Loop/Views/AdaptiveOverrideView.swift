@@ -140,6 +140,9 @@ struct AdaptiveOverrideView: View {
                     Label("Possible site problem — check your site", systemImage: "exclamationmark.triangle.fill")
                         .foregroundColor(.orange)
                 }
+                if let forecast = viewModel.status.dayForecast {
+                    Label(forecast, systemImage: "calendar").font(.footnote)
+                }
                 if !viewModel.status.activeSignals.isEmpty {
                     Text("Active: " + viewModel.status.activeSignals.map(\.displayName).joined(separator: ", "))
                         .font(.footnote)
@@ -171,6 +174,8 @@ struct AdaptiveOverrideView: View {
                     value: Binding(get: { viewModel.config.maxScale }, set: { v in viewModel.update { $0.maxScale = v } }),
                     in: 1.0...AOConfig.absoluteMaxScale, step: 0.05)
             Toggle("Detect rides and runs live (motion sensors)", isOn: Binding(get: { viewModel.config.useMotionDetection }, set: { v in viewModel.update { $0.useMotionDetection = v } }))
+            Toggle("Prepare for the ride home (learned)", isOn: Binding(get: { viewModel.config.predictRideHome }, set: { v in viewModel.update { $0.predictRideHome = v } }))
+            Toggle("Quiet-day adjustment (learned)", isOn: Binding(get: { viewModel.config.quietDayAdjustment }, set: { v in viewModel.update { $0.quietDayAdjustment = v } }))
             Toggle("Higher target after exercise", isOn: Binding(get: { viewModel.config.postExerciseTarget }, set: { v in viewModel.update { $0.postExerciseTarget = v } }))
             Toggle("Time-of-day profile", isOn: Binding(get: { viewModel.config.useTimeOfDayProfile }, set: { v in viewModel.update { $0.useTimeOfDayProfile = v } }))
             Toggle("Auto-prepare at usual workout times", isOn: Binding(get: { viewModel.config.autoWorkoutPrep }, set: { v in viewModel.update { $0.autoWorkoutPrep = v } }))

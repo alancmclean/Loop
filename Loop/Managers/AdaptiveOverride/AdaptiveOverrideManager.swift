@@ -24,6 +24,7 @@ import Foundation
 import HealthKit
 import LoopKit
 import UserNotifications
+import CoreMotion
 import os.log
 
 extension Notification.Name {
@@ -38,6 +39,8 @@ struct AOStatus: Equatable {
     var appliedScale: Double?
     var lastDecision: String = "Not run yet"
     var siteFailureSuspected = false
+    /// e.g. "Ride home likely around 6:00 PM (78%)" or "Probably a quiet day (70%)".
+    var dayForecast: String?
 }
 
 final class AdaptiveOverrideManager {
@@ -63,6 +66,7 @@ final class AdaptiveOverrideManager {
 
     private var timer: Timer?
     private let motion = AOMotionActivityReader()
+    private let pedometer = CMPedometer()
     /// Target floor wanted by the latest update (used when building / refreshing our override).
     private var desiredTargetFloor: Double?
     private var observerQueries: [HKObserverQuery] = []
@@ -91,7 +95,7 @@ final class AdaptiveOverrideManager {
     private enum Key: String {
         case config, factors, snapshot, ownSyncIdentifier, enabledAt, logs, manualSites, ticks, habits
         case suggestions, report, lastWeeklyAt, siteAlerts, remindedHabits, effectivenessNotes, lastSuggestedScale
-        case todProfile, workoutHabits, workoutPrepUntil, typicalIOB
+        case todProfile, workoutHabits, workoutPrepUntil, typicalIOB, daySummaries
         var full: String { "com.loopkit.Loop.AdaptiveOverride." + rawValue }
     }
 
@@ -217,7 +221,7 @@ final class AdaptiveOverrideManager {
 
     static var healthReadTypes: Set<HKObjectType> {
         var types: Set<HKObjectType> = [HKObjectType.workoutType(), HKObjectType.categoryType(forIdentifier: .sleepAnalysis)!]
-        for id in [HKQuantityTypeIdentifier.heartRateVariabilitySDNN, .restingHeartRate, .appleSleepingWristTemperature] {
+        for id in [HKQuantityTypeIdentifier.heartRateVariabilitySDNN, .restingHeartRate, .appleSleepingWristTemperature, .stepCount] {
             if let t = HKObjectType.quantityType(forIdentifier: id) { types.insert(t) }
         }
         return types
@@ -304,6 +308,35 @@ final class AdaptiveOverrideManager {
             if config.postExerciseTarget && workoutStartedRecently {
                 raiseTarget(config.postExerciseTargetMgdl)
             }
+
+            // What kind of day is this? Learned from recent weeks, updated by today's movement.
+            var dayForecast: String?
+            let dayModel = AODayModel(history: daySummaries, calendar: rules.calendar)
+            let dayStart = rules.calendar.startOfDay(for: now)
+            func minute(_ d: Date) -> Int { Int(d.timeIntervalSince(dayStart) / 60) }
+            let todaysRides = context.workouts.filter { $0.start >= dayStart && $0.duration >= 15 * 60 }
+            let morningRide = todaysRides.contains { dayModel.morningWindow.contains(minute($0.start)) }
+            let afternoonRide = todaysRides.contains { minute($0.start) >= dayModel.afternoonWindow.lowerBound }
+            if config.predictRideHome, !prep,
+               let forecast = dayModel.rideHomeForecast(now: now, morningRideToday: morningRide, afternoonRideStarted: afternoonRide) {
+                let time = DateFormatter.localizedString(from: forecast.window.start.addingTimeInterval(60 * 60), dateStyle: .none, timeStyle: .short)
+                dayForecast = "Ride home likely around \(time) (\(Int((forecast.probability * 100).rounded()))%)"
+                if forecast.probability >= 0.6 && forecast.window.contains(now) {
+                    extras.append((reason: "Ride home likely", factor: config.workoutPrepScale))
+                    raiseTarget(config.workoutPrepTargetMgdl)
+                }
+            }
+            if config.quietDayAdjustment, todaysRides.isEmpty, let isfNow = isf(at: now) {
+                let hour = rules.calendar.component(.hour, from: now)
+                let stepsBefore10 = hour >= 10 ? AOSignalRules.steps(in: context.steps, before: dayStart.addingTimeInterval(10 * 3600), window: 10 * 3600) : nil
+                let pQuiet = dayModel.sedentaryProbability(now: now, rodeToday: false, stepsBefore10: stepsBefore10)
+                let factor = dayModel.sedentaryFactor(isf: isfNow)
+                if pQuiet >= 0.5 { dayForecast = dayForecast ?? "Probably a quiet day (\(Int((pQuiet * 100).rounded()))%)" }
+                let movingNow = active.contains(.recentMovement) || active.contains(.exerciseEarly) || active.contains(.exerciseLate)
+                if (9..<20).contains(hour), !movingNow, factor > 1.0 {
+                    extras.append((reason: "Quiet day", factor: 1 + (factor - 1) * pQuiet))
+                }
+            }
             if config.stackingGuard {
                 let hour = rules.calendar.component(.hour, from: now)
                 if AOStackingGuard().active(iob: AOInsulinModel.onBoard(doses, at: now), typicalIOB: typicalIOB[hour],
@@ -338,7 +371,8 @@ final class AdaptiveOverrideManager {
 
             status = AOStatus(updatedAt: now, activeSignals: active.sorted(), autosens: autosens.factor,
                               autosensHours: autosens.hours, appliedScale: applied,
-                              lastDecision: Self.describe(decision, mode: config.mode), siteFailureSuspected: siteFailure)
+                              lastDecision: Self.describe(decision, mode: config.mode), siteFailureSuspected: siteFailure,
+                              dayForecast: dayForecast)
         } catch {
             log.error("Adaptive override update failed: %{public}@", String(describing: error))
         }
@@ -500,6 +534,23 @@ final class AdaptiveOverrideManager {
         }
         save(iobByHour.compactMapValues { $0.median }, .typicalIOB)
 
+        // Day summaries for the last 60 days (needs its own, longer fetch of workouts and steps).
+        let dayStart = now.addingTimeInterval(-60 * 24 * 3600)
+        async let longWorkouts = fetchWorkouts(start: dayStart, end: now)
+        async let longSteps = fetchHourlySteps(start: dayStart, end: now)
+        async let longGlucose = glucoseStore.getGlucoseSamples(start: dayStart, end: now)
+        async let longDoses = doseStore.getDoses(start: dayStart, end: now)
+        let (lw, ls, lg, ld) = try await (longWorkouts, longSteps, longGlucose, longDoses)
+        let lgPoints = lg.map(Self.point), ldDoses = ld.map(Self.dose)
+        var summaries: [AODaySummary] = []
+        var day = rules.calendar.startOfDay(for: dayStart)
+        let today = rules.calendar.startOfDay(for: now)
+        while day < today {
+            summaries.append(AODayModel.summarize(day: day, workouts: lw, hourlySteps: ls, glucose: lgPoints, doses: ldDoses, calendar: rules.calendar))
+            day = rules.calendar.date(byAdding: .day, value: 1, to: day)!
+        }
+        save(summaries, .daySummaries)
+
         // Effectiveness: snapshot "before" once, then judge "after" against it.
         var notes = effectivenessNotes
         if let enabledAt {
@@ -575,10 +626,16 @@ final class AdaptiveOverrideManager {
         let (w, s, p, phys) = try await (workouts, sleep, pumpSites, physiology)
         let motionSamples: [AOMotionSample] = config.useMotionDetection ? await motion.samples(from: motionStart, to: end) : []
         let liveSessions = AOMotionWorkoutDetector().sessions(from: motionSamples, now: end)
+        var steps = try await fetchHourlySteps(start: max(start, now.addingTimeInterval(-32 * 24 * 3600)), end: end)
+        // Live top-up: Health's step totals lag; the pedometer knows the last 2 h now.
+        if let live = await pedometerSteps(from: end.addingTimeInterval(-2 * 3600), to: end) {
+            let inHealth = AOSignalRules.steps(in: steps, before: end)
+            if live > inHealth { steps.append(AOMetricSample(date: end.addingTimeInterval(-60), value: live - inHealth)) }
+        }
         return AOContext(workouts: AOMotionWorkoutDetector.merge(health: w, motion: liveSessions), nights: rules.nights(from: s),
                          siteChanges: mergeSiteChanges(pump: p, manual: manualSiteChanges),
                          hrv: phys.hrv, restingHeartRate: phys.rhr, wristTemperature: phys.temp,
-                         logs: logs)
+                         logs: logs, steps: steps)
     }
 
     /// Pump-reported changes are the source of truth for timing; a manual log within 3 h
@@ -640,6 +697,48 @@ final class AdaptiveOverrideManager {
         return try await fetchSamples(type: type, start: start, end: end)
             .compactMap { $0 as? HKQuantitySample }
             .map { AOMetricSample(date: $0.startDate, value: $0.quantity.doubleValue(for: unit)) }
+    }
+
+    var daySummaries: [AODaySummary] { load(.daySummaries, as: [AODaySummary].self) ?? [] }
+
+    /// Hourly step totals from Health (de-duplicated across iPhone and Watch by Health's statistics).
+    private func fetchHourlySteps(start: Date, end: Date) async throws -> [AOMetricSample] {
+        guard let type = HKObjectType.quantityType(forIdentifier: .stepCount) else { return [] }
+        let anchor = rules.calendar.startOfDay(for: start)
+        return try await withCheckedThrowingContinuation { continuation in
+            let query = HKStatisticsCollectionQuery(quantityType: type,
+                                                    quantitySamplePredicate: HKQuery.predicateForSamples(withStart: start, end: end, options: []),
+                                                    options: .cumulativeSum, anchorDate: anchor, intervalComponents: DateComponents(hour: 1))
+            query.initialResultsHandler = { _, collection, error in
+                if let error {
+                    let code = (error as? HKError)?.code
+                    if code == .errorAuthorizationDenied || code == .errorAuthorizationNotDetermined || code == .errorNoData {
+                        continuation.resume(returning: [])
+                    } else {
+                        continuation.resume(throwing: error)
+                    }
+                    return
+                }
+                var out: [AOMetricSample] = []
+                collection?.enumerateStatistics(from: start, to: end) { stat, _ in
+                    if let q = stat.sumQuantity() {
+                        // Stamp mid-hour so "steps before t" counts a whole hour only once it has mostly passed.
+                        out.append(AOMetricSample(date: stat.startDate.addingTimeInterval(30 * 60), value: q.doubleValue(for: .count())))
+                    }
+                }
+                continuation.resume(returning: out)
+            }
+            healthStore.execute(query)
+        }
+    }
+
+    private func pedometerSteps(from start: Date, to end: Date) async -> Double? {
+        guard CMPedometer.isStepCountingAvailable(), CMPedometer.authorizationStatus() == .authorized else { return nil }
+        return await withCheckedContinuation { continuation in
+            pedometer.queryPedometerData(from: start, to: end) { data, _ in
+                continuation.resume(returning: data?.numberOfSteps.doubleValue)
+            }
+        }
     }
 
     private func fetchWorkouts(start: Date, end: Date) async throws -> [AOWorkout] {

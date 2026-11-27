@@ -138,7 +138,7 @@ struct AOPatternLearner {
     /// Starting points used until (and shrunk toward while) your own data builds up.
     /// Only insulin-*reducing* signals get one, from well-established effects
     /// (exercise, alcohol); anything that would add insulin needs your own evidence.
-    static let priors: [AOSignal: Double] = [.exerciseEarly: 0.8, .exerciseLate: 0.9, .alcohol: 0.9]
+    static let priors: [AOSignal: Double] = [.exerciseEarly: 0.8, .exerciseLate: 0.9, .alcohol: 0.9, .recentMovement: 0.95]
     var shrinkagePrior = 5.0
     var learnedRange: ClosedRange<Double> = 0.6...1.4
     var minBaselineInsulinPerHour = 0.05

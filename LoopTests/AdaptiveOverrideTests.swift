@@ -273,6 +273,91 @@ final class AdaptiveOverrideTests: XCTestCase {
         XCTAssertEqual(signals(at: t0, AOContext(workouts: [ongoing])), [.exerciseEarly])
     }
 
+    // MARK: Day model
+
+    private func summary(daysAgo: Int, from now: Date, morning: Bool, homeMinute: Int?, steps: Double, before10: Double,
+                         insulin: Double = 30, glucose: Double = 120) -> AODaySummary {
+        let day = utc.startOfDay(for: now.addingTimeInterval(-Double(daysAgo) * 86400))
+        return AODaySummary(day: day, weekday: utc.component(.weekday, from: day), morningRide: morning,
+                            afternoonRideMinute: homeMinute, steps: steps, stepsBefore10: before10,
+                            daytimeInsulin: insulin, daytimeMeanGlucose: glucose)
+    }
+
+    func testRideHomeForecastLearnsTimeAndProbability() {
+        let now = m(17 * 60 + 10, from: utc.startOfDay(for: h(24 * 60)))
+        var hist: [AODaySummary] = []
+        for d in 1...20 {
+            // Morning rides most days; ride home ~18:00 on 4 of 5.
+            hist.append(summary(daysAgo: d, from: now, morning: true, homeMinute: d % 5 == 0 ? nil : 18 * 60 + (d % 3) * 10,
+                                steps: 9000, before10: 3000))
+        }
+        let model = AODayModel(history: hist, calendar: utc)
+        guard let f = model.rideHomeForecast(now: now, morningRideToday: true, afternoonRideStarted: false) else { return XCTFail() }
+        XCTAssertGreaterThan(f.probability, 0.65); XCTAssertLessThan(f.probability, 0.9)
+        XCTAssertTrue(f.window.contains(now))                       // 17:10 is inside ~17:00-18:35
+        XCTAssertNil(model.rideHomeForecast(now: now, morningRideToday: false, afternoonRideStarted: false))
+        XCTAssertNil(model.rideHomeForecast(now: now, morningRideToday: true, afternoonRideStarted: true))
+    }
+
+    func testRecentWeeksOutweighOldPattern() {
+        // Old pattern: this weekday was always a quiet home day. Last 3 weeks: active.
+        let now = m(9 * 60, from: utc.startOfDay(for: h(24 * 120)))
+        var hist: [AODaySummary] = []
+        for wk in 1...12 {
+            let recent = wk <= 3
+            hist.append(summary(daysAgo: wk * 7, from: now, morning: false, homeMinute: nil,
+                                steps: recent ? 12000 : 2500, before10: recent ? 4000 : 800))
+            // Other weekdays: mixed, to give the step threshold something to learn from.
+            hist.append(summary(daysAgo: wk * 7 + 1, from: now, morning: false, homeMinute: nil, steps: 7000, before10: 2000))
+            hist.append(summary(daysAgo: wk * 7 + 2, from: now, morning: false, homeMinute: nil, steps: 3000, before10: 900))
+        }
+        let model = AODayModel(history: hist, calendar: utc)
+        let p = model.sedentaryProbability(now: now, rodeToday: false, stepsBefore10: nil)
+        // Same history but without the change in the last 3 weeks:
+        let unchanged = hist.map { s -> AODaySummary in
+            guard s.steps == 12000 else { return s }
+            return AODaySummary(day: s.day, weekday: s.weekday, morningRide: false, afternoonRideMinute: nil, steps: 2500,
+                                stepsBefore10: 800, daytimeInsulin: s.daytimeInsulin, daytimeMeanGlucose: s.daytimeMeanGlucose)
+        }
+        let pUnchanged = AODayModel(history: unchanged, calendar: utc).sedentaryProbability(now: now, rodeToday: false, stepsBefore10: nil)
+        // 3 recent active weeks outweigh 9 older quiet ones about equally → the estimate moves a lot.
+        XCTAssertLessThan(p, pUnchanged - 0.3)
+        XCTAssertEqual(model.sedentaryProbability(now: now, rodeToday: true, stepsBefore10: nil), 0.05)
+    }
+
+    func testMorningStepsUpdateQuietDayProbability() {
+        let now = m(10 * 60 + 30, from: utc.startOfDay(for: h(24 * 60)))
+        var hist: [AODaySummary] = []
+        for d in 1...30 {
+            let quiet = d % 2 == 0
+            hist.append(summary(daysAgo: d, from: now, morning: false, homeMinute: nil,
+                                steps: quiet ? 3000 : 10000, before10: quiet ? 800 : 3500))
+        }
+        let model = AODayModel(history: hist, calendar: utc)
+        let lowSteps = model.sedentaryProbability(now: now, rodeToday: false, stepsBefore10: 600)
+        let highSteps = model.sedentaryProbability(now: now, rodeToday: false, stepsBefore10: 4000)
+        XCTAssertGreaterThan(lowSteps, highSteps + 0.3)
+    }
+
+    func testSedentaryFactorLearnedAndBounded() {
+        let now = h(24 * 60)
+        var hist: [AODaySummary] = []
+        for d in 1...30 {
+            let quiet = d % 2 == 0
+            hist.append(summary(daysAgo: d, from: now, morning: false, homeMinute: nil, steps: quiet ? 3000 : 10000,
+                                before10: 1000, insulin: quiet ? 36 : 30, glucose: quiet ? 135 : 120))
+        }
+        let f = AODayModel(history: hist, calendar: utc).sedentaryFactor(isf: 32)
+        XCTAssertGreaterThan(f, 1.05); XCTAssertLessThanOrEqual(f, 1.15)
+        XCTAssertEqual(AODayModel(history: [], calendar: utc).sedentaryFactor(isf: 32), 1.0)
+    }
+
+    func testRecentMovementSignal() {
+        let steps = [AOMetricSample(date: m(-90, from: t0), value: 700), AOMetricSample(date: m(-20, from: t0), value: 500)]
+        XCTAssertTrue(signals(at: t0, AOContext(steps: steps)).contains(.recentMovement))
+        XCTAssertFalse(signals(at: t0, AOContext(steps: [AOMetricSample(date: m(-30, from: t0), value: 300)])).contains(.recentMovement))
+    }
+
     // MARK: Site failure
 
     func testSiteFailureDetected() {

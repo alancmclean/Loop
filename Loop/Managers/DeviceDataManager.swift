@@ -182,7 +182,7 @@ final class DeviceDataManager {
         readTypes.insert(HKObjectType.categoryType(forIdentifier: HKCategoryTypeIdentifier.sleepAnalysis)!)
         // Adaptive override layer: workouts, HRV, resting heart rate, wrist temperature
         readTypes.insert(HKObjectType.workoutType())
-        for id in [HKQuantityTypeIdentifier.heartRateVariabilitySDNN, .restingHeartRate, .appleSleepingWristTemperature] {
+        for id in [HKQuantityTypeIdentifier.heartRateVariabilitySDNN, .restingHeartRate, .appleSleepingWristTemperature, .stepCount] {
             if let type = HKObjectType.quantityType(forIdentifier: id) { readTypes.insert(type) }
         }
 
