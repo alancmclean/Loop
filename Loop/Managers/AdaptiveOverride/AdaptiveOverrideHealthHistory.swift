@@ -10,6 +10,7 @@
 
 import Foundation
 import HealthKit
+import LoopKit
 
 struct AOHealthHistoryReader {
     let healthStore: HKHealthStore
