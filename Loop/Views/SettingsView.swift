@@ -295,6 +295,13 @@ extension SettingsView {
                                 label: NSLocalizedString("Adaptive Adjustments", comment: "Title text for button to adaptive override settings"),
                                 descriptiveText: NSLocalizedString("Exercise, sleep, site & stress", comment: "Descriptive text for adaptive override settings"))
                 }
+                NavigationLink(destination: WeeklyReportsView(manager: adaptiveOverrideManager)) {
+                    LargeButton(action: { },
+                                includeArrow: false,
+                                imageView: Image(systemName: "doc.text.magnifyingglass").resizable().scaledToFit().foregroundColor(.accentColor).frame(width: 40, height: 40),
+                                label: NSLocalizedString("Weekly Reports", comment: "Title text for button to weekly reports"),
+                                descriptiveText: NSLocalizedString("How your week went, with suggestions", comment: "Descriptive text for weekly reports"))
+                }
             }
 
             ForEach(pluginMenuItems.filter {$0.section == .configuration}) { item in

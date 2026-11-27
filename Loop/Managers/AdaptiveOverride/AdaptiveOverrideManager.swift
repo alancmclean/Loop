@@ -29,6 +29,7 @@ import os.log
 
 extension Notification.Name {
     static let adaptiveOverrideStatusDidChange = Notification.Name("com.loopkit.Loop.AdaptiveOverride.statusDidChange")
+    static let adaptiveOverrideReportsDidChange = Notification.Name("com.loopkit.Loop.AdaptiveOverride.reportsDidChange")
 }
 
 struct AOStatus: Equatable {
@@ -51,7 +52,12 @@ final class AdaptiveOverrideManager {
     private let healthStore: HKHealthStore
     private let glucoseStore: GlucoseStore
     private let doseStore: DoseStore
+    private let carbStore: CarbStore?
     private let loopManager: LoopDataManager
+    private let history: AOHealthHistoryReader
+    private let reportStore = AOReportStore()
+    private var isGeneratingReport = false
+    private var lastScheduledReportAttempt: Date?
     private let defaults: UserDefaults
     private let log = OSLog(category: "AdaptiveOverrideManager")
 
@@ -80,11 +86,13 @@ final class AdaptiveOverrideManager {
         }
     }
 
-    init(healthStore: HKHealthStore, glucoseStore: GlucoseStore, doseStore: DoseStore, loopManager: LoopDataManager,
-         defaults: UserDefaults = .appGroup ?? .standard) {
+    init(healthStore: HKHealthStore, glucoseStore: GlucoseStore, doseStore: DoseStore, carbStore: CarbStore? = nil,
+         loopManager: LoopDataManager, defaults: UserDefaults = .appGroup ?? .standard) {
         self.healthStore = healthStore
         self.glucoseStore = glucoseStore
         self.doseStore = doseStore
+        self.carbStore = carbStore
+        self.history = AOHealthHistoryReader(healthStore: healthStore)
         self.loopManager = loopManager
         self.defaults = defaults
         Self.shared = self
@@ -96,6 +104,7 @@ final class AdaptiveOverrideManager {
         case config, factors, snapshot, ownSyncIdentifier, enabledAt, logs, manualSites, ticks, habits
         case suggestions, report, lastWeeklyAt, siteAlerts, remindedHabits, effectivenessNotes, lastSuggestedScale
         case todProfile, workoutHabits, workoutPrepUntil, typicalIOB, daySummaries
+        case reportSettings, lastReportBoundary
         var full: String { "com.loopkit.Loop.AdaptiveOverride." + rawValue }
     }
 
@@ -148,7 +157,142 @@ final class AdaptiveOverrideManager {
         Task { await update() }
     }
     var suggestions: AOSettingsSuggestions { load(.suggestions, as: AOSettingsSuggestions.self) ?? AOSettingsSuggestions() }
-    var weeklyReport: AOWeeklyReport? { load(.report, as: AOWeeklyReport.self) }
+    // MARK: - Weekly reports
+
+    var reportSettings: AOReportSettings {
+        get { load(.reportSettings, as: AOReportSettings.self) ?? AOReportSettings() }
+        set { save(newValue, .reportSettings) }
+    }
+
+    /// Saved reports, newest first.
+    var reports: [AOReport] { reportStore.all() }
+
+    func deleteReport(_ id: UUID) {
+        reportStore.delete(id)
+        postReportsChanged()
+    }
+
+    private func postReportsChanged() {
+        DispatchQueue.main.async { NotificationCenter.default.post(name: .adaptiveOverrideReportsDidChange, object: self) }
+    }
+
+    /// "Generate now": the 7 days up to now.
+    func generateReportNow() async throws -> AOReport? {
+        await requestReportAuthorization()
+        return try await generateReport(trigger: .manual, end: Date(), strict: false)
+    }
+
+    private func requestReportAuthorization() async {
+        let types = Self.healthReadTypes
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            healthStore.requestAuthorization(toShare: nil, read: types) { _, _ in continuation.resume() }
+        }
+    }
+
+    /// Weekly, on the chosen day (default Monday from 7am): the 7 days before that day's midnight.
+    /// If Health is locked (phone locked), it tries again on a later update.
+    private func generateScheduledReportIfDue(now: Date) async {
+        let settings = reportSettings
+        guard settings.automatic, let boundary = settings.dueBoundary(now: now, calendar: rules.calendar) else { return }
+        if let last = load(.lastReportBoundary, as: Date.self), last >= boundary { return }
+        if let attempt = lastScheduledReportAttempt, now.timeIntervalSince(attempt) < 30 * 60 { return }
+        lastScheduledReportAttempt = now
+        do {
+            let report = try await generateReport(trigger: .scheduled, end: boundary, strict: true)
+            save(boundary, .lastReportBoundary)
+            if let report, settings.notify {
+                var body = report.headline + "."
+                if let top = report.suggestions.first { body += " Top suggestion: \(top.title)." }
+                await notify(id: "AdaptiveOverride.report", title: "Your weekly report is ready", body: body)
+            }
+        } catch {
+            log.error("Weekly report failed, will retry: %{public}@", String(describing: error))
+        }
+    }
+
+    @discardableResult
+    func generateReport(trigger: AOReport.Trigger, end: Date, strict: Bool) async throws -> AOReport? {
+        guard !isGeneratingReport else { return nil }
+        isGeneratingReport = true
+        defer { isGeneratingReport = false }
+
+        let start = end.addingTimeInterval(-7 * 24 * 3600)
+        let from = end.addingTimeInterval(-29 * 24 * 3600)
+        async let glucoseTask = historyGlucose(start: from, end: end, strict: strict)
+        async let dosesTask = historyDoses(start: from.addingTimeInterval(-8 * 3600), end: end, strict: strict)
+        async let carbsTask = historyCarbs(start: start.addingTimeInterval(-3600), end: end)
+        async let workoutsTask = fetchWorkouts(start: from, end: end)
+        async let sleepTask = fetchSleep(start: from.addingTimeInterval(-24 * 3600), end: end)
+        async let pumpSitesTask = fetchPumpSiteChanges(since: from.addingTimeInterval(-4 * 24 * 3600))
+        let (glucose, doses, carbs, workouts, sleep) = try await (glucoseTask, dosesTask, carbsTask, workoutsTask, sleepTask)
+        let pumpSites = (try? await pumpSitesTask) ?? []
+
+        let isfFn: (Date) -> Double? = { [weak self] in self?.isf(at: $0) }
+        let basalFn: (Date) -> Double? = { [weak self] in self?.basal(at: $0) }
+        let meals = AOMealDetector().meals(glucose: glucose, doses: doses)
+        var settingsSuggestions = AOSettingsSuggestions(generatedAt: end)
+        settingsSuggestions.isf = AOSettingsTuner().suggestISF(glucose: glucose, doses: doses, meals: meals, isf: isfFn, basal: basalFn, now: end)
+
+        let oref = OrefDosingSettings.current.mode
+        let algorithm = oref == .active ? "OpenAPS" : (oref == .shadow ? "Loop (OpenAPS shadow)" : "Loop")
+        let config = self.config
+        let input = AOReportInput(
+            start: start, end: end, glucose: glucose, doses: doses, carbs: carbs,
+            workouts: workouts,
+            nights: rules.nights(from: sleep),
+            siteChanges: mergeSiteChanges(pump: pumpSites, manual: manualSiteChanges),
+            ticks: ticks, siteAlerts: siteAlerts, effectivenessNotes: effectivenessNotes,
+            settingsSuggestions: settingsSuggestions,
+            scheduledBasal: basalFn,
+            carbRatio: { [weak self] in self?.loopManager.settings.carbRatioSchedule?.value(at: $0) },
+            algorithm: algorithm,
+            adaptiveEnabled: config.enabled,
+            adaptiveMode: config.mode == .automatic ? "Automatic" : "Suggest",
+            calendar: rules.calendar)
+        guard let report = AOReportAnalyzer().make(input, trigger: trigger, now: Date()) else { return nil }
+        reportStore.save(report)
+        postReportsChanged()
+        return report
+    }
+
+    // MARK: - History (Loop's store has 7 days; older comes from Apple Health)
+
+    /// With `strict`, a Health failure (e.g. phone locked) throws instead of returning only recent data.
+    func historyGlucose(start: Date, end: Date, strict: Bool = false) async throws -> [AOGlucosePoint] {
+        let local = try await glucoseStore.getGlucoseSamples(start: start, end: end).map(Self.point)
+        let firstLocal = local.map(\.date).min() ?? end
+        guard firstLocal > start.addingTimeInterval(30 * 60) else { return local }
+        do {
+            return AOHistoryMerge.glucose(local: local, health: try await history.glucose(start: start, end: firstLocal))
+        } catch {
+            if strict { throw error }
+            return local
+        }
+    }
+
+    func historyDoses(start: Date, end: Date, strict: Bool = false) async throws -> [AOInsulinDose] {
+        let local = try await doseStore.getDoses(start: start, end: end).map(Self.dose)
+        let firstLocal = local.map(\.start).min() ?? end
+        guard firstLocal > start.addingTimeInterval(30 * 60) else { return local }
+        do {
+            return AOHistoryMerge.doses(local: local, health: try await history.insulin(start: start, end: firstLocal))
+        } catch {
+            if strict { throw error }
+            return local
+        }
+    }
+
+    private func historyCarbs(start: Date, end: Date) async throws -> [AOCarbEntry] {
+        var local: [AOCarbEntry] = []
+        if let carbStore {
+            local = ((try? await carbStore.getCarbEntries(start: start, end: end)) ?? [])
+                .map { AOCarbEntry(date: $0.startDate, grams: $0.quantity.doubleValue(for: .gram())) }
+        }
+        let firstLocal = local.map(\.date).min() ?? end
+        guard firstLocal > start.addingTimeInterval(30 * 60) else { return local }
+        let older = (try? await history.carbs(start: start, end: firstLocal)) ?? []
+        return AOHistoryMerge.carbs(local: local, health: older)
+    }
     var effectivenessNotes: [String] { load(.effectivenessNotes, as: [String].self) ?? [] }
     var logs: [AOLogEntry] { load(.logs, as: [AOLogEntry].self) ?? [] }
     var manualSiteChanges: [AOSiteChange] { load(.manualSites, as: [AOSiteChange].self) ?? [] }
@@ -221,6 +365,7 @@ final class AdaptiveOverrideManager {
 
     static var healthReadTypes: Set<HKObjectType> {
         var types: Set<HKObjectType> = [HKObjectType.workoutType(), HKObjectType.categoryType(forIdentifier: .sleepAnalysis)!]
+        types.formUnion(AOHealthHistoryReader.readTypes)
         for id in [HKQuantityTypeIdentifier.heartRateVariabilitySDNN, .restingHeartRate, .appleSleepingWristTemperature, .stepCount] {
             if let t = HKObjectType.quantityType(forIdentifier: id) { types.insert(t) }
         }
@@ -249,6 +394,8 @@ final class AdaptiveOverrideManager {
         guard !isRunning else { return }
         isRunning = true
         defer { isRunning = false }
+
+        await generateScheduledReportIfDue(now: now)
 
         do {
             let config = self.config
@@ -524,13 +671,11 @@ final class AdaptiveOverrideManager {
 
     func relearn(now: Date = Date(), forceWeekly: Bool = false) async throws {
         let start = now.addingTimeInterval(-learningLookback)
-        async let glucoseTask = glucoseStore.getGlucoseSamples(start: start, end: now)
-        async let dosesTask = doseStore.getDoses(start: start.addingTimeInterval(-4 * 3600), end: now)
+        // Loop's own store has only 7 days; history() fills in the rest from Apple Health.
+        async let glucoseTask = historyGlucose(start: start, end: now)
+        async let dosesTask = historyDoses(start: start.addingTimeInterval(-4 * 3600), end: now)
         async let contextTask = fetchContext(start: start.addingTimeInterval(-rules.exerciseLateWindow), end: now, now: now, physiologyDays: 62)
-        let (glucoseSamples, rawDoses, baseContext) = try await (glucoseTask, dosesTask, contextTask)
-
-        let glucose = glucoseSamples.map(Self.point)
-        let doses = rawDoses.map(Self.dose)
+        let (glucose, doses, baseContext) = try await (glucoseTask, dosesTask, contextTask)
         var context = baseContext
         context.meals = AOMealDetector().meals(glucose: glucose, doses: doses)
         let buckets = AOBucketBuilder(rules: rules).build(glucose: glucose, doses: doses, context: context, start: start, end: now)
@@ -558,10 +703,9 @@ final class AdaptiveOverrideManager {
         let dayStart = now.addingTimeInterval(-60 * 24 * 3600)
         async let longWorkouts = fetchWorkouts(start: dayStart, end: now)
         async let longSteps = fetchHourlySteps(start: dayStart, end: now)
-        async let longGlucose = glucoseStore.getGlucoseSamples(start: dayStart, end: now)
-        async let longDoses = doseStore.getDoses(start: dayStart, end: now)
-        let (lw, ls, lg, ld) = try await (longWorkouts, longSteps, longGlucose, longDoses)
-        let lgPoints = lg.map(Self.point), ldDoses = ld.map(Self.dose)
+        async let longGlucose = historyGlucose(start: dayStart, end: now)
+        async let longDoses = historyDoses(start: dayStart, end: now)
+        let (lw, ls, lgPoints, ldDoses) = try await (longWorkouts, longSteps, longGlucose, longDoses)
         var summaries: [AODaySummary] = []
         var day = rules.calendar.startOfDay(for: dayStart)
         let today = rules.calendar.startOfDay(for: now)
@@ -599,7 +743,7 @@ final class AdaptiveOverrideManager {
             }
         }
 
-        // Weekly: settings suggestions + report.
+        // Weekly: settings suggestions (the weekly report runs on its own schedule, see generateScheduledReportIfDue).
         let lastWeekly = load(.lastWeeklyAt, as: Date.self) ?? .distantPast
         if forceWeekly || now.timeIntervalSince(lastWeekly) >= weeklyInterval {
             let tuner = AOSettingsTuner()
@@ -611,15 +755,6 @@ final class AdaptiveOverrideManager {
                                                                 isf: isfFn, basal: basalFn, now: now),
                                           generatedAt: now)
             save(s, .suggestions)
-
-            let weekStart = now.addingTimeInterval(-7 * 24 * 3600)
-            let weekNotes = Array(notes.suffix(5)) + (s.isEmpty ? [String]() : ["New settings suggestions to review in Adaptive Adjustments."])
-            if let report = AOWeeklyReport.make(glucose: glucose, ticks: ticks,
-                                                siteAlerts: siteAlerts.filter { $0 >= weekStart }.count,
-                                                notes: Array(weekNotes), start: weekStart, end: now, calendar: rules.calendar) {
-                save(report, .report)
-                await notify(id: "AdaptiveOverride.report", title: "Your week", body: report.summary)
-            }
             save(now, .lastWeeklyAt)
         }
         log.default("Relearned: factors %{public}@", String(describing: learnedFactors.factors))

@@ -258,6 +258,7 @@ class LoopAppManager: NSObject {
         adaptiveOverrideManager = AdaptiveOverrideManager(healthStore: deviceDataManager.healthStore,
                                                           glucoseStore: deviceDataManager.glucoseStore,
                                                           doseStore: deviceDataManager.doseStore,
+                                                          carbStore: deviceDataManager.carbStore,
                                                           loopManager: deviceDataManager.loopManager)
         adaptiveOverrideManager?.start()
 

@@ -16,7 +16,7 @@ final class AdaptiveOverrideViewModel: ObservableObject {
     @Published var factors: AOLearnedFactors
     @Published var habits: [AOMealHabit]
     @Published var suggestions: AOSettingsSuggestions
-    @Published var report: AOWeeklyReport?
+    @Published var report: AOReport?
     @Published var notes: [String]
     @Published var knownLocations: [String]
     @Published var isRelearning = false
@@ -32,7 +32,7 @@ final class AdaptiveOverrideViewModel: ObservableObject {
         factors = manager.learnedFactors
         habits = manager.mealHabits
         suggestions = manager.suggestions
-        report = manager.weeklyReport
+        report = manager.reports.first
         notes = manager.effectivenessNotes
         knownLocations = manager.knownSiteLocations
         profile = manager.timeOfDayProfile
@@ -52,7 +52,7 @@ final class AdaptiveOverrideViewModel: ObservableObject {
         factors = manager.learnedFactors
         habits = manager.mealHabits
         suggestions = manager.suggestions
-        report = manager.weeklyReport
+        report = manager.reports.first
         notes = manager.effectivenessNotes
         knownLocations = manager.knownSiteLocations
         profile = manager.timeOfDayProfile
@@ -80,6 +80,8 @@ final class AdaptiveOverrideViewModel: ObservableObject {
         manager.logSiteChange(location: location)
         knownLocations = manager.knownSiteLocations
     }
+
+    var reportManager: AdaptiveOverrideManager { manager }
 
     func relearnNow() {
         isRelearning = true
@@ -307,19 +309,15 @@ struct AdaptiveOverrideView: View {
 
     private var reportSection: some View {
         Section(header: Text("Weekly report")) {
-            if let r = viewModel.report {
-                row("Time in range (70–180)", pct(r.timeInRange))
-                row("Below 70 / below 54", "\(pct1(r.timeBelow70)) / \(pct1(r.timeBelow54))")
-                row("Above 180 / above 250", "\(pct(r.timeAbove180)) / \(pct(r.timeAbove250))")
-                row("Average / GMI", "\(Int(r.meanGlucose.rounded())) mg/dL / \(String(format: "%.1f", r.gmi))%")
-                row("Variability (CV)", pct(r.coefficientOfVariation))
-                if let lows = r.lowsMostOften { row("Lows most often", lows) }
-                if let highs = r.highsMostOften { row("Highs most often", highs) }
-                row("Average adjustment", pct(r.averageScale))
-                if r.siteAlerts > 0 { row("Site alerts", "\(r.siteAlerts)") }
-                ForEach(r.notes, id: \.self) { Text($0).font(.footnote) }
-            } else {
-                Text("First report after a week of use.").foregroundColor(.secondary)
+            NavigationLink(destination: WeeklyReportsView(manager: viewModel.reportManager)) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Weekly reports")
+                    if let r = viewModel.report {
+                        Text("\(r.dateRangeText): \(r.headline)").font(.footnote).foregroundColor(.secondary)
+                    } else {
+                        Text("Look back at your week, with suggestions").font(.footnote).foregroundColor(.secondary)
+                    }
+                }
             }
             ForEach(viewModel.notes.suffix(5), id: \.self) { Text($0).font(.footnote).foregroundColor(.secondary) }
         }

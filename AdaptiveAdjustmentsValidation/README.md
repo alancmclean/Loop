@@ -89,4 +89,16 @@ parts run (row 2 is the closest simulated equivalent, but the simulator's contro
 Real data (`rollercoaster.py`): 40% of highs were followed by a low within 5 h, and 25% of lows by a
 high within 3 h; insulin in the 2 h after a high was similar whether or not it ended low (~5 U).
 
+## Weekly report
+`AdaptiveOverrideReport.swift` (logic) and `WeeklyReportView.swift` (screens). Prototyped first on a real
+week with `weekly_report.py` and `stack_check.py` (both take the parsed export folder and an end date).
+
+Finding that shaped it (`stack_check.py`, 4 weeks, 587 manual boluses): manual boluses given above 180 were
+followed by a low within 4 h 54% of the time, vs about 33% for other boluses; the median bolus insulin
+already active at those corrections was about 9.5 U. That is the main over-correction signal in the report.
+
+Fix found while building it: Loop keeps only 7 days of glucose and insulin on the phone
+(`LOOP_LOCAL_CACHE_DURATION_DAYS = 7`), so the "30-day" learning and 60-day day model had been seeing one
+week. Older history is now read from Apple Health (`AdaptiveOverrideHealthHistory.swift`).
+
 Never commit health data to this repository.

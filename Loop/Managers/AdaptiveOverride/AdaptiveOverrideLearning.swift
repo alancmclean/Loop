@@ -9,7 +9,6 @@
 //   - settings suggestions (basal by hour, ISF) — suggestions only, never applied
 //   - meal-time habits for pre-bolus reminders
 //   - effectiveness check: switches off signals linked to more lows
-//   - weekly report
 //
 
 import Foundation
@@ -454,80 +453,6 @@ struct AOEffectivenessEvaluator {
     }
 
     static func pct(_ x: Double) -> String { String(format: "%.1f%%", x * 100) }
-}
-
-// MARK: - Weekly report
-
-struct AOWeeklyReport: Codable, Equatable {
-    var start: Date
-    var end: Date
-    var meanGlucose: Double
-    var timeInRange: Double
-    var timeBelow70: Double
-    var timeBelow54: Double
-    var timeAbove180: Double
-    var timeAbove250: Double
-    var gmi: Double
-    var coefficientOfVariation: Double
-    var lowsMostOften: String?
-    var highsMostOften: String?
-    var signalHours: [String: Int]
-    var averageScale: Double
-    var siteAlerts: Int
-    var notes: [String]
-
-    static func make(glucose: [AOGlucosePoint], ticks: [AOTickRecord], siteAlerts: Int,
-                     notes: [String], start: Date, end: Date, calendar: Calendar = .current) -> AOWeeklyReport? {
-        let values = glucose.filter { $0.date >= start && $0.date < end }
-        guard values.count >= 288 else { return nil }   // at least ~1 day of CGM
-        let v = values.map(\.mgdl)
-        let n = Double(v.count)
-        let mean = v.reduce(0, +) / n
-        let sd = sqrt(v.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / max(n - 1, 1))
-        func frac(_ p: (Double) -> Bool) -> Double { Double(v.filter(p).count) / n }
-
-        // Which 4-hour block of the day has the most lows / highs.
-        var blockLow = [Int: (Int, Int)](), blockHigh = [Int: (Int, Int)]()
-        for p in values {
-            let block = calendar.component(.hour, from: p.date) / 4
-            blockLow[block, default: (0, 0)].1 += 1; blockHigh[block, default: (0, 0)].1 += 1
-            if p.mgdl < 70 { blockLow[block, default: (0, 0)].0 += 1 }
-            if p.mgdl > 180 { blockHigh[block, default: (0, 0)].0 += 1 }
-        }
-        func worst(_ d: [Int: (Int, Int)], minFraction: Double) -> String? {
-            let best = d.max { Double($0.value.0) / Double(max($0.value.1, 1)) < Double($1.value.0) / Double(max($1.value.1, 1)) }
-            guard let b = best, Double(b.value.0) / Double(max(b.value.1, 1)) >= minFraction else { return nil }
-            let names = ["12–4am", "4–8am", "8am–12pm", "12–4pm", "4–8pm", "8pm–12am"]
-            return names[b.key]
-        }
-
-        let weekTicks = ticks.filter { $0.hourStart >= start && $0.hourStart < end }
-        var signalHours: [String: Int] = [:]
-        for t in weekTicks { for s in t.signals { signalHours[s, default: 0] += 1 } }
-
-        return AOWeeklyReport(
-            start: start, end: end, meanGlucose: mean,
-            timeInRange: frac { $0 >= 70 && $0 <= 180 },
-            timeBelow70: frac { $0 < 70 }, timeBelow54: frac { $0 < 54 },
-            timeAbove180: frac { $0 > 180 }, timeAbove250: frac { $0 > 250 },
-            gmi: 3.31 + 0.02392 * mean,
-            coefficientOfVariation: mean > 0 ? sd / mean : 0,
-            lowsMostOften: worst(blockLow, minFraction: 0.02),
-            highsMostOften: worst(blockHigh, minFraction: 0.25),
-            signalHours: signalHours,
-            averageScale: weekTicks.isEmpty ? 1.0 : weekTicks.map(\.meanScale).reduce(0, +) / Double(weekTicks.count),
-            siteAlerts: siteAlerts,
-            notes: notes)
-    }
-
-    var summary: String {
-        var parts = ["In range \(Int((timeInRange * 100).rounded()))%",
-                     "low \(String(format: "%.1f", timeBelow70 * 100))%",
-                     "avg \(Int(meanGlucose.rounded())) mg/dL"]
-        if let lows = lowsMostOften { parts.append("lows mostly \(lows)") }
-        if let highs = highsMostOften { parts.append("highs mostly \(highs)") }
-        return parts.joined(separator: " · ")
-    }
 }
 
 // MARK: - Helpers
